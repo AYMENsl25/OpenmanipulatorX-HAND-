@@ -118,7 +118,9 @@ x = radial*cos(theta1)
 y = radial*sin(theta1)
 ```
 
-Calibration is centralized in `config.py`. The measured home is:
+Calibration is centralized in `config.py`. ID14 has a physical encoder zero at
+`0` degrees (the straight/vertical reference), while the user-defined HOME pose
+uses ID14=`90` degrees. HOME is not the encoder zero:
 
 ```text
 ID11=351, ID12=1, ID13=1, ID14=90
