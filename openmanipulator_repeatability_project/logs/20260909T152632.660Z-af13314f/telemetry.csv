@@ -1,0 +1,1 @@
+timestamp_utc,session_id,sequence,event,category,elapsed_s,sample_index,id11_raw,id12_raw,id13_raw,id14_raw,id15_raw,id11_deg,id12_deg,id13_deg,id14_deg,id15_deg,q1_deg,q2_deg,q3_deg,q4_deg,physical_x_mm,physical_y_mm,physical_z_mm,internal_x_mm,internal_y_mm,internal_z_mm,target_x_mm,target_y_mm,target_z_mm,position_error_mm,values_json
