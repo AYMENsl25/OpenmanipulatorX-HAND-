@@ -24,6 +24,7 @@ class OpenManipulatorGUI(ttk.Frame):
         self.port_var = tk.StringVar()
         self.torque_var = tk.StringVar(value="TORQUE: UNKNOWN")
         self.angle_vars = {motor_id: tk.StringVar(value="---") for motor_id in (11, 12, 13, 14)}
+        self.joint_vars = {axis: tk.StringVar(value="---") for axis in ("theta1", "theta2", "theta3", "theta4")}
         self.xyz_vars = {axis: tk.StringVar(value="---") for axis in ("X", "Y", "Z")}
         self.target_vars = {axis: tk.StringVar() for axis in ("X", "Y", "Z")}
         self.status_var = tk.StringVar(value="Disconnected")
@@ -74,6 +75,11 @@ class OpenManipulatorGUI(ttk.Frame):
         for row, motor_id in enumerate((11, 12, 13, 14), start=1):
             ttk.Label(frame, text=f"ID{motor_id}:").grid(row=row, column=0, sticky="w")
             ttk.Label(frame, textvariable=self.angle_vars[motor_id]).grid(row=row, column=1, sticky="w")
+        ttk.Label(frame, text="ID14 physical zero: 0 deg; custom HOME: 90 deg").grid(
+            row=5, column=0, columnspan=2, sticky="w", pady=(8, 0)
+        )
+        ttk.Label(frame, text="FK theta4:").grid(row=6, column=0, sticky="w")
+        ttk.Label(frame, textvariable=self.joint_vars["theta4"]).grid(row=6, column=1, sticky="w")
         return frame
 
     def _xyz_read_section(self) -> ttk.LabelFrame:
@@ -125,6 +131,9 @@ class OpenManipulatorGUI(ttk.Frame):
     def _display_angles(self, motors: MotorAngles) -> None:
         for motor_id, value in zip((11, 12, 13, 14), motors.as_tuple(), strict=True):
             self.angle_vars[motor_id].set(f"{value:.3f} deg")
+        joints = motor_to_fk_angles(motors)
+        for axis, value in zip(self.joint_vars, joints.as_tuple(), strict=True):
+            self.joint_vars[axis].set(f"{value:.3f} deg")
 
     def _display_xyz(self, motors: MotorAngles) -> None:
         xyz = forward_kinematics(motors)
