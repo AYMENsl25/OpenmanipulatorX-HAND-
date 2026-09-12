@@ -27,21 +27,21 @@ def _print_result(label, target, result):
 
 
 def test_home_ik_roundtrip():
-    target = (143.523, 0.0, 208.985)
+    target = (156.481, 0.0, 323.589)
     result = inverse_kinematics(*target)
     _print_result("Home IK round trip", target, result)
-    assert result.position_error <= 2.0
+    assert result.position_error <= 0.05
 
 
-def test_second_target_ik_roundtrip():
-    target = (169.6729, -21.4023, 86.995)
+def test_fwd_ik_roundtrip():
+    target = (380.231, 0.0, 76.501)
     result = inverse_kinematics(*target)
-    _print_result("Second target IK round trip", target, result)
-    assert result.position_error <= 2.0
+    _print_result("Horizontal Forward IK round trip", target, result)
+    assert result.position_error <= 0.05
 
 
-def test_extended_target_ik_roundtrip():
-    target = (221.907, 86.933, 215.907)
+def test_table_reach_ik_roundtrip():
+    target = (167.284, 230.246, 310.779)
     result = inverse_kinematics(*target)
-    _print_result("Extended target IK round trip", target, result)
-    assert result.position_error <= 2.0
+    _print_result("Table reach IK round trip", target, result)
+    assert result.position_error <= 0.05
