@@ -85,6 +85,7 @@ def motor_to_fk_angles(motors: MotorAngles) -> JointAngles:
         theta1=normalize_angle(motors.id11 - config.ID11_CENTER),
         theta2=normalize_angle(motors.id12 - config.ID12_ZERO),
         theta3=normalize_angle(motors.id13 - config.ID13_ZERO),
+        # ID14=0 is the physical zero. HOME_ID14 is a separate user pose.
         theta4=normalize_angle(motors.id14 - config.ID14_ZERO),
     )
 
@@ -106,21 +107,20 @@ def forward_kinematics_from_joints(joints: JointAngles) -> XYZ:
     t3 = math.radians(joints.theta3)
     t4 = math.radians(joints.theta4)
 
-    a2 = t2
-    a3 = t2 + t3
-    a4 = t2 + t3 + t4
+    phi2 = config.ALPHA2_0 - t2
+    phi3 = math.radians(90.0) - t2 - t3
+    phi4 = phi3 - t4
 
     radial = (
-        config.L2_X * math.cos(a2)
-        + config.L3_X * math.cos(a3)
-        + config.L4_X * math.cos(a4)
+        config.L2 * math.cos(phi2)
+        + config.L3_X * math.cos(phi3)
+        + config.L4_X * math.cos(phi4)
     )
     z = (
-        config.Z_BASE
-        + config.L1_Z
-        + config.L2_Z * math.sin(a2)
-        + config.L3_X * math.sin(a3)
-        + config.L4_X * math.sin(a4)
+        config.Z0
+        + config.L2 * math.sin(phi2)
+        + config.L3_X * math.sin(phi3)
+        + config.L4_X * math.sin(phi4)
     )
     return XYZ(
         x=radial * math.cos(t1),
@@ -149,40 +149,6 @@ def validate_motor_angles(motors: MotorAngles) -> None:
             raise KinematicsError(f"ID{motor_id} motor angle is out of range")
 
 
-def _bisect_roots(function, low: float, high: float, step: float = 0.5) -> list[float]:
-    roots: list[float] = []
-    x0 = low
-    y0 = function(x0)
-    x = low + step
-    while x <= high + 1e-9:
-        y = function(x)
-        if abs(y0) < 1e-8:
-            roots.append(x0)
-        elif y0 * y < 0.0:
-            a, b = x0, x
-            fa = y0
-            for _ in range(60):
-                mid = (a + b) / 2.0
-                fm = function(mid)
-                if abs(fm) < 1e-10:
-                    a = b = mid
-                    break
-                if fa * fm <= 0.0:
-                    b = mid
-                else:
-                    a = mid
-                    fa = fm
-            roots.append((a + b) / 2.0)
-        x0, y0 = x, y
-        x += step
-
-    unique: list[float] = []
-    for root in roots:
-        if all(abs(root - existing) > 0.05 for existing in unique):
-            unique.append(root)
-    return unique
-
-
 def _candidate_joints_for_target(
     x: float,
     y: float,
@@ -191,15 +157,13 @@ def _candidate_joints_for_target(
 ) -> list[JointAngles]:
     theta1 = math.degrees(math.atan2(y, x))
     radial = math.hypot(x, y)
-    z_plane = z - config.Z_BASE - config.L1_Z
+    z_plane = z - config.Z0
 
     # Build prioritized list of theta4 candidates
     t4_candidates: list[float] = []
     if preferred_theta4 is not None:
         t4_candidates.append(normalize_angle(preferred_theta4))
-    if config.DEFAULT_THETA4 not in t4_candidates:
-        t4_candidates.append(config.DEFAULT_THETA4)
-    for preset in (0.0, 45.0, -45.0, 30.0, -30.0, 60.0, -60.0):
+    for preset in (90.0, 0.0, 45.0, -45.0, 30.0, -30.0, 60.0, -60.0):
         if preset not in t4_candidates:
             t4_candidates.append(preset)
 
@@ -214,32 +178,36 @@ def _candidate_joints_for_target(
     candidates: list[JointAngles] = []
     for theta4 in t4_candidates:
         t4 = math.radians(theta4)
-        effective_x = config.L3_X + config.L4_X * math.cos(t4)
-        effective_z = config.L4_X * math.sin(t4)
-        effective_len = math.hypot(effective_x, effective_z)
-        effective_phase = math.atan2(effective_z, effective_x)
+        A = config.L3_X + config.L4_X * math.cos(t4)
+        B = config.L4_X * math.sin(t4)
+        R_eff = math.hypot(A, B)
+        psi_eff = math.atan2(B, A)
 
-        def shoulder_constraint(theta2_deg: float) -> float:
-            t2 = math.radians(theta2_deg)
-            dx = radial - config.L2_X * math.cos(t2)
-            dz = z_plane - config.L2_Z * math.sin(t2)
-            return dx * dx + dz * dz - effective_len * effective_len
+        D = math.hypot(radial, z_plane)
+        if D > config.L2 + R_eff + 1e-3 or D < abs(config.L2 - R_eff) - 1e-3:
+            continue
 
-        roots = _bisect_roots(
-            shoulder_constraint,
-            config.FK_JOINT_LIMITS["theta2"].minimum,
-            config.FK_JOINT_LIMITS["theta2"].maximum,
-            step=1.0,
-        )
-        for theta2 in roots:
-            t2 = math.radians(theta2)
-            dx = radial - config.L2_X * math.cos(t2)
-            dz = z_plane - config.L2_Z * math.sin(t2)
-            if math.hypot(dx, dz) < 1e-9:
-                continue
-            a3 = math.atan2(dz, dx) - effective_phase
-            theta3 = normalize_angle(math.degrees(a3 - t2))
-            candidates.append(JointAngles(theta1, theta2, theta3, theta4))
+        cos_alpha = (config.L2 * config.L2 + D * D - R_eff * R_eff) / (2.0 * config.L2 * D)
+        cos_alpha = max(-1.0, min(1.0, cos_alpha))
+        alpha = math.acos(cos_alpha)
+        gamma = math.atan2(z_plane, radial)
+
+        for sign in (1.0, -1.0):
+            phi2 = gamma + sign * alpha
+            t2 = config.ALPHA2_0 - phi2
+            t2_deg = math.degrees(t2)
+
+            r_elbow = config.L2 * math.cos(phi2)
+            z_elbow = config.L2 * math.sin(phi2)
+
+            dr = radial - r_elbow
+            dz = z_plane - z_elbow
+            phi_eff = math.atan2(dz, dr)
+            phi3 = phi_eff + psi_eff
+            t3 = math.radians(90.0) - t2 - phi3
+            t3_deg = normalize_angle(math.degrees(t3))
+
+            candidates.append(JointAngles(theta1, t2_deg, t3_deg, theta4))
 
     return candidates
 
@@ -258,7 +226,7 @@ def inverse_kinematics(
 
     candidates = _candidate_joints_for_target(x, y, z, preferred_theta4=reference.theta4)
     if not candidates:
-        raise KinematicsError("Target XYZ is unreachable")
+        raise KinematicsError(f"Target XYZ=({x:.1f}, {y:.1f}, {z:.1f}) is outside robot reachable workspace")
 
     valid: list[IKResult] = []
     for joints in candidates:
@@ -274,17 +242,17 @@ def inverse_kinematics(
         dy = xyz_check.y - y
         dz = xyz_check.z - z
         error = math.sqrt(dx * dx + dy * dy + dz * dz)
-        valid.append(IKResult(joints, motors, xyz_check, dx, dy, dz, error))
+        if error <= config.IK_POSITION_TOLERANCE_MM:
+            valid.append(IKResult(joints, motors, xyz_check, dx, dy, dz, error))
 
     if not valid:
         raise KinematicsError(
             f"No valid IK solution within joint limits for target XYZ=({x:.1f}, {y:.1f}, {z:.1f})"
         )
 
-    # Sort solutions prioritizing low position error and minimal joint motion from reference
+    # Sort solutions prioritizing minimal joint motion from reference posture
     valid.sort(
         key=lambda result: (
-            result.position_error > config.IK_POSITION_TOLERANCE_MM,
             abs(normalize_angle(result.joint_angles.theta1 - reference.theta1)) * 1.0
             + abs(normalize_angle(result.joint_angles.theta2 - reference.theta2)) * 1.5
             + abs(normalize_angle(result.joint_angles.theta3 - reference.theta3)) * 1.2
@@ -292,13 +260,7 @@ def inverse_kinematics(
             result.position_error,
         )
     )
-    best = valid[0]
-    if best.position_error > config.IK_POSITION_TOLERANCE_MM:
-        raise KinematicsError(
-            f"IK/FK validation error {best.position_error:.3f} mm exceeds "
-            f"{config.IK_POSITION_TOLERANCE_MM:.3f} mm tolerance"
-        )
-    return best
+    return valid[0]
 
 
 def validate_ik_solution(result: IKResult) -> None:
