@@ -9,22 +9,32 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+import math
+
 Z_BASE = 17.0
 L1_Z = 59.5
+Z0 = Z_BASE + L1_Z  # 76.5 mm
+
 L2_X = 24.0
 L2_Z = 128.0
+L2 = math.hypot(L2_X, L2_Z)  # 130.23056 mm
+ALPHA2_0 = math.atan2(L2_Z, L2_X)  # 79.380345 deg in radians
+
 L3_X = 124.0
 L4_X = 126.0
 
 ID11_CENTER = 351.0
 ID12_ZERO = 0.0
 ID13_ZERO = 0.0
-ID14_ZERO = 0.0
+ID14_ZERO = 0.0  # Physical ID14 encoder zero; the straight/vertical pose.
 
 HOME_ID11 = 351.0
 HOME_ID12 = 1.0
 HOME_ID13 = 1.0
 HOME_ID14 = 90.0
+
+# HOME is a user-defined pose and must not be used as the encoder zero.
+CUSTOM_HOME_ID14 = 90.0
 
 DEFAULT_THETA4 = 90.0
 IK_POSITION_TOLERANCE_MM = 2.0
