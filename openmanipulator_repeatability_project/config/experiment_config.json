@@ -1,0 +1,55 @@
+{
+  "physical_frame": {
+    "origin": "ID11_CENTER_AXIS",
+    "x_positive": "forward",
+    "y_positive": "right",
+    "z_positive": "up",
+    "ground_z_mm": 0.0
+  },
+  "physical_to_internal": {
+    "x_scale": 1.0,
+    "x_offset_mm": 0.0,
+    "y_scale": -1.0,
+    "y_offset_mm": 0.0,
+    "z_scale": 1.0,
+    "z_offset_mm": 0.0
+  },
+  "soft_workspace": {
+    "x_min_mm": -100.0,
+    "x_max_mm": 350.0,
+    "y_min_mm": -200.0,
+    "y_max_mm": 200.0
+  },
+  "point_experiment": {
+    "approach_clearance_mm": 50.0,
+    "retract_clearance_mm": 50.0,
+    "touch_dwell_seconds": 0.5,
+    "settle_seconds": 0.25,
+    "telemetry_interval_ms": 250,
+    "angle_read_attempts": 3,
+    "angle_retry_delay_ms": 50,
+    "tcp_warning_error_mm": 5.0,
+    "maximum_tcp_error_mm": 10.0
+  },
+  "repeatability_experiment": {
+    "default_repetitions": 10,
+    "maximum_repetitions": 100,
+    "touch_sample_count": 10,
+    "maximum_touch_samples": 100,
+    "touch_sample_interval_ms": 50,
+    "pause_for_manual_measurement": true
+  },
+  "experiment_points": [
+    {"name": "P01", "x_mm": -35.0, "y_mm": 145.0, "z_mm": 0.0},
+    {"name": "P02", "x_mm": 146.0, "y_mm": 145.0, "z_mm": 0.0},
+    {"name": "P03", "x_mm": 257.0, "y_mm": 145.0, "z_mm": 0.0},
+    {"name": "P04", "x_mm": 257.0, "y_mm": 0.0, "z_mm": 0.0},
+    {"name": "P05", "x_mm": 257.0, "y_mm": -145.0, "z_mm": 0.0},
+    {"name": "P06", "x_mm": 146.0, "y_mm": -145.0, "z_mm": 0.0},
+    {"name": "P07", "x_mm": -35.0, "y_mm": -145.0, "z_mm": 0.0},
+    {"name": "P08", "x_mm": 80.0, "y_mm": 70.0, "z_mm": 0.0},
+    {"name": "P09", "x_mm": 230.0, "y_mm": 70.0, "z_mm": 0.0},
+    {"name": "P10", "x_mm": 80.0, "y_mm": -70.0, "z_mm": 0.0},
+    {"name": "P11", "x_mm": 230.0, "y_mm": -70.0, "z_mm": 0.0}
+  ]
+}
