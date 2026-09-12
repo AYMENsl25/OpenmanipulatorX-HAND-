@@ -3,7 +3,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
+import config
 from kinematics import MotorAngles, fk_to_motor_angles, motor_to_fk_angles, raw_to_degrees, degrees_to_raw
+
+
+def test_id14_physical_zero_is_separate_from_custom_home():
+    assert config.ID14_ZERO == 0.0
+    assert config.HOME_ID14 == 90.0
+    assert config.CUSTOM_HOME_ID14 == 90.0
 
 
 def test_motor_joint_roundtrip_home():
