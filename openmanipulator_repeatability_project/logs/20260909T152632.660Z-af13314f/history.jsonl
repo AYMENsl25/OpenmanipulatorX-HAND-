@@ -1,0 +1,2 @@
+{"timestamp_utc":"2026-09-09T15:26:32.860Z","session_id":"20260909T152632.660Z-af13314f","sequence":0,"event":"gui_session_started","category":"session","context":{"log_directory":"C:\\Users\\slima\\Downloads\\The Robotic Hand ISU XR LAB\\openmanipulator_trajectory_project\\logs\\20260909T152632.660Z-af13314f"}}
+{"timestamp_utc":"2026-09-09T15:26:32.869Z","session_id":"20260909T152632.660Z-af13314f","sequence":1,"event":"gui_session_closed","category":"session","context":null}
