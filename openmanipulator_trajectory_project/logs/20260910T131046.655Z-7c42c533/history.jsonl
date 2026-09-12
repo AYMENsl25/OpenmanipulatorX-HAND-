@@ -1,0 +1,5 @@
+{"timestamp_utc":"2026-09-10T13:10:46.748Z","session_id":"20260910T131046.655Z-7c42c533","sequence":0,"event":"gui_session_started","category":"session","context":{"log_directory":"C:\\Users\\slima\\Downloads\\The Robotic Hand ISU XR LAB\\openmanipulator_trajectory_project\\logs\\20260910T131046.655Z-7c42c533"}}
+{"timestamp_utc":"2026-09-10T13:10:54.691Z","session_id":"20260910T131046.655Z-7c42c533","sequence":1,"event":"gui_message","category":"gui","context":{"message":"Connected","details":null}}
+{"timestamp_utc":"2026-09-10T13:10:57.165Z","session_id":"20260910T131046.655Z-7c42c533","sequence":2,"event":"gui_message","category":"gui","context":{"message":"Torque ON","details":null}}
+{"timestamp_utc":"2026-09-10T13:11:26.193Z","session_id":"20260910T131046.655Z-7c42c533","sequence":4,"event":"gui_message","category":"gui","context":{"message":"Connected","details":null}}
+{"timestamp_utc":"2026-09-10T13:19:51.113Z","session_id":"20260910T131046.655Z-7c42c533","sequence":6,"event":"gui_session_closed","category":"session","context":null}
