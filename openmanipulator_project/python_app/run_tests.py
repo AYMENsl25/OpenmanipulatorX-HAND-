@@ -10,7 +10,7 @@ from kinematics import MotorAngles, degrees_to_raw, forward_kinematics, inverse_
 def check_home_fk() -> None:
     motors = MotorAngles(351.0, 1.0, 1.0, 90.0)
     xyz = forward_kinematics(motors)
-    expected = (143.523, 0.0, 208.985)
+    expected = (156.481, 0.0, 323.589)
     error = math.sqrt((xyz.x - expected[0]) ** 2 + (xyz.y - expected[1]) ** 2 + (xyz.z - expected[2]) ** 2)
     print("HOME FK")
     print(f"actual: X={xyz.x:.3f}, Y={xyz.y:.3f}, Z={xyz.z:.3f}")
@@ -39,7 +39,7 @@ def check_ik_round_trip(label: str, target: tuple[float, float, float]) -> None:
     )
     print(f"dX={result.dx:.6f}, dY={result.dy:.6f}, dZ={result.dz:.6f}")
     print(f"total error={result.position_error:.6f} mm")
-    assert result.position_error <= 2.0
+    assert result.position_error <= 0.05
 
 
 def check_conversion_layer() -> None:
@@ -53,10 +53,11 @@ def check_conversion_layer() -> None:
 if __name__ == "__main__":
     check_home_fk()
     print()
-    check_ik_round_trip("HOME IK ROUND TRIP", (143.523, 0.0, 208.985))
+    check_ik_round_trip("HOME IK ROUND TRIP", (156.481, 0.0, 323.589))
     print()
+    check_ik_round_trip("HORIZONTAL FORWARD IK ROUND TRIP", (380.231, 0.0, 76.501))
     print()
-    check_ik_round_trip("EXTENDED TARGET IK ROUND TRIP", (221.907, 86.933, 215.907))
+    check_ik_round_trip("TABLE REACH IK ROUND TRIP", (167.284, 230.246, 310.779))
     print()
     check_conversion_layer()
     print()
