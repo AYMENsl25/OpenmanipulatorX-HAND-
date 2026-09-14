@@ -1,6 +1,7 @@
 venv/
 node_modules/
 graphify-out/
+.verification/
 __pycache__/
 *.py[cod]
 *.pyo
