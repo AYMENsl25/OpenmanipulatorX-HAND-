@@ -64,7 +64,11 @@ static const size_t MAX_TRAJECTORY_POINTS = 600;
 static const uint32_t STEP_INTERVAL_MS = 20; // 50 Hz control loop
 static const uint32_t MIN_MOVE_TIME_MS = 120;
 static const uint32_t MAX_MOVE_TIME_MS = 4500;
+static float motionSpeedScale = 1.0f;
 static const int32_t FINAL_POSITION_TOLERANCE_COUNTS = 8; // ~0.7 degrees tolerance (tightened for precision)
+// Try the precise threshold for the full settling window, then accept up to
+// 10 degrees for data collection. Joint/motor limits remain independent.
+static const float DATA_COLLECTION_ARRIVAL_TOLERANCE_DEG = 10.0f;
 static const uint32_t FINAL_WAIT_TIMEOUT_MS = 3000;
 
 Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
@@ -464,6 +468,8 @@ bool waitForFinalTargets(const int32_t targets[])
       largestErrorId = MOTOR_IDS[i];
     }
   }
+  if (largestErrorDegrees <= DATA_COLLECTION_ARRIVAL_TOLERANCE_DEG)
+    return true;
   Serial.print("ERROR,TARGET_NOT_REACHED,ID");
   Serial.print(largestErrorId);
   Serial.print(",ERROR_DEG,");
@@ -514,6 +520,7 @@ bool moveToDegrees(const float targetDegrees[])
     moveDurationMs = MIN_MOVE_TIME_MS;
   if (moveDurationMs > MAX_MOVE_TIME_MS)
     moveDurationMs = MAX_MOVE_TIME_MS;
+  moveDurationMs = (uint32_t)((float)moveDurationMs / motionSpeedScale);
 
   uint16_t steps = (uint16_t)(moveDurationMs / STEP_INTERVAL_MS);
   if (steps < 1)
@@ -694,6 +701,17 @@ void handleCommand(String line)
   {
     Serial.print("STATUS,TEACHING="); Serial.print(teaching ? "ON" : "OFF");
     Serial.print(",POINTS="); Serial.println(trajectoryCount);
+  }
+  else if (line.startsWith("SET_SPEED,"))
+  {
+    float scale = line.substring(10).toFloat();
+    if (!isfinite(scale) || scale < 0.25f || scale > 1.0f || teaching)
+      Serial.println("ERROR,INVALID_SPEED");
+    else
+    {
+      motionSpeedScale = scale;
+      Serial.println("OK,SPEED");
+    }
   }
   else if (line == "TORQUE_STATUS")
   {

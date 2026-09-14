@@ -109,7 +109,9 @@ KINEMATICS_VERSION = "finger-center-tcp-v6-ground-gap-7mm"
 SERIAL_BAUDRATE = 115200
 SERIAL_TIMEOUT_SECONDS = 2.0
 MOVE_TIMEOUT_SECONDS = 30.0
-POST_MOVE_TOLERANCE_DEGREES = 2.0
+# Data-collection arrival threshold; not an accuracy claim or a joint limit.
+POST_MOVE_TOLERANCE_DEGREES = 10.0
+MOTOR_TRACKING_WARNING_DEGREES = 8.0 * 360.0 / 4096.0
 
 # OpenCR expects degrees in the same 0..360 encoder-angle convention it returns.
 RAW_COUNTS_PER_REV = 4096

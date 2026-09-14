@@ -389,6 +389,13 @@ class OpenCRController:
                 raise ControllerError(f"Movement failed or malformed response: {done}")
             self._verify_motor_targets(motors)
 
+    def set_motion_speed(self, scale: float) -> None:
+        if not math.isfinite(scale) or not 0.25 <= scale <= 1.0:
+            raise ValueError("Motion speed scale must be between 0.25 and 1.0")
+        response = self._command(f"SET_SPEED,{scale:.3f}")
+        if response != "OK,SPEED":
+            raise ControllerError("Speed setting rejected. Upload the updated repeatability OpenCR sketch. Received: " + response)
+
     def _verify_motor_targets(self, target: MotorAngles) -> None:
         actual = self.read_motor_angles()
         errors = tuple(
@@ -396,6 +403,7 @@ class OpenCRController:
             for actual_angle, target_angle in zip(actual.as_tuple(), target.as_tuple(), strict=True)
         )
         largest_error = max(errors)
+        self.last_motor_tracking_errors = errors
         if largest_error <= config.POST_MOVE_TOLERANCE_DEGREES:
             return
         index = errors.index(largest_error)
