@@ -225,34 +225,46 @@ the existing point-motion sequence.
    green and READY.
 4. Press **REPEATABILITY SETUP**. Check only the required points, for example
    P01, P04, P06, P08, and P11. Points execute in numerical P01-P11 order.
-5. Enter repetitions, touch sample count, and sample interval. Ten repetitions,
-   10 samples, and 50 ms are the defaults.
-6. Keep **Pause at every touch** checked when external/manual measurements will
-   be entered. Press **RUN CHECKED SEQUENCE** and confirm the full motion plan.
+5. Enter repetitions, touch sample count, sample interval, and motion speed
+   scale (0.25 to 1.0). 1.0 keeps the existing speed; 0.5 doubles move duration.
+6. Press **RUN CHECKED SEQUENCE** and confirm the full motion plan. Updated
+   firmware supporting `SET_SPEED` is required.
 7. At each touch the robot holds position while automatic telemetry is sampled.
-   Enter either all measured physical X/Y/Z values in millimetres or one scalar
-   measured distance error. For example, 24.8 cm must be entered as 248 mm.
-   Press **SAVE MEASUREMENT + CONTINUE**, or explicitly skip the manual value.
+   Sampling continues automatically without a manual measurement form or pause.
 8. The robot retracts and returns to WORK after every point. Press **STOP** for
    any unexpected motion.
 
-Each run autosaves to
-`experiment_results/<session-id>/repeatability_results.xlsx` after every touch.
-The workbook contains:
+Each run autosaves three separated workbooks under
+`experiment_results/<session-id>/` after every touch.
 
-- `Touch Summary`: commanded point, averaged encoder/FK XYZ, signed XYZ error,
-  error norm, sample noise, manual measurement error, and per-motor summaries.
-- `Telemetry Samples`: every position RAW count, motor/joint angle, velocity,
-  current, PWM, voltage, temperature, hardware-error byte, moving flags, and FK.
+Open `repeatability_point_results.xlsx` first. It contains:
+
+- `Point Results`: target physical XYZ, FK-from-encoder XYZ, signed XYZ error,
+  distance error, and sample noise.
+- `Error Plots`: XYZ error by touch, distance error/noise, and per-point error bars.
+- `Point Error Summary`: mean/max error and across-touch XYZ standard deviations.
+- `Planned Point Path`: the planned approach, touch, retract, and return-to-WORK
+  positions and motor angles for each point.
 - `Run Config`: selected points, repetitions, sampling settings, coordinate
   convention, TCP definition, and kinematics version.
-- `Run Events`: touch, manual-entry, completion, stop, and failure history.
+
+Open `repeatability_telemetry_details.xlsx` only when debugging motor behavior.
+It contains:
+
+- `Telemetry Samples`: every per-sample position RAW count, motor/joint angle,
+  velocity, current, PWM, voltage, temperature, hardware-error byte, moving
+  flags, and FK.
+- `Run Events`: touch, completion, stop, and failure history.
+
+Open `repeatability_point_results_motor_angles.xlsx` for planned IK versus
+actual motor angles, calibrated q comparisons, angle errors, RAW means, and
+the `Motor Error Plot`. See `REPEATABILITY_DATA_GUIDE.md` for the testing procedure.
 
 Automatic FK-versus-commanded error measures controller/encoder repeatability.
 It does not prove physical TCP accuracy because link dimensions, compliance,
 backlash, table contact, and external measurement error are not visible to the
-encoders. The manual XYZ columns provide the independent evidence needed to
-separate those effects.
+encoders. Independent physical measurements would be needed to separate those
+effects; this automatic dataset does not collect external metrology.
 
 ## Offline checks
 
