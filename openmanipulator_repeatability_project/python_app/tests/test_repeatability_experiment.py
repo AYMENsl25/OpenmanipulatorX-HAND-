@@ -11,11 +11,12 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from kinematics import JointAngles, MotorAngles, XYZ
 from repeatability_experiment import (
     ManualMeasurement,
+    PlannedPathPhase,
     RepeatabilityRunConfig,
     RepeatabilityWorkbook,
     TouchRecord,
 )
-from serial_controller import MotorTelemetry, OpenCRController, RobotState, TelemetrySnapshot
+from serial_controller import ControllerError, MotorTelemetry, OpenCRController, RobotState, TelemetrySnapshot
 
 
 def telemetry_snapshot(offset: int = 0) -> TelemetrySnapshot:
@@ -49,6 +50,31 @@ def telemetry_snapshot(offset: int = 0) -> TelemetrySnapshot:
 
 
 class RepeatabilityExperimentTests(unittest.TestCase):
+    def test_collection_arrival_tolerance_boundary(self) -> None:
+        controller = OpenCRController()
+        target = MotorAngles(100, 180, 350, 80)
+        for error in (0.791, 9.0, 10.0):
+            controller.read_motor_angles = lambda: MotorAngles(100, 180 + error, 350, 80)
+            controller._verify_motor_targets(target)
+            self.assertAlmostEqual(controller.last_motor_tracking_errors[1], error)
+        controller.read_motor_angles = lambda: MotorAngles(100, 190.1, 350, 80)
+        with self.assertRaises(ControllerError):
+            controller._verify_motor_targets(target)
+
+    def test_motion_speed_protocol_and_validation(self) -> None:
+        controller = OpenCRController()
+        commands = []
+        def command(value):
+            commands.append(value)
+            return "OK,SPEED"
+        controller._command = command
+        controller.set_motion_speed(0.5)
+        self.assertEqual(commands, ["SET_SPEED,0.500"])
+        for value in (0.0, 1.1, float("nan")):
+            with self.assertRaises(ValueError):
+                controller.set_motion_speed(value)
+        self.assertEqual(len(commands), 1)
+
     def test_telemetry_protocol_parser(self) -> None:
         groups = []
         for motor_id, raw in zip((11, 12, 13, 14), (1917, 2046, 4049, 943), strict=True):
@@ -65,8 +91,9 @@ class RepeatabilityExperimentTests(unittest.TestCase):
         self.assertAlmostEqual(snapshot.motors[0].current_ma, 26.9)
         self.assertAlmostEqual(snapshot.motors[0].voltage_v, 12.0)
 
-    def test_workbook_contains_summary_samples_config_and_events(self) -> None:
+    def test_workbooks_separate_point_results_from_telemetry_details(self) -> None:
         output_path = Path(__file__).resolve().parent / "repeatability_test_output.xlsx"
+        details_path = output_path.with_name("repeatability_test_output_details.xlsx")
         try:
             run = RepeatabilityRunConfig(
                 session_id="test-repeatability",
@@ -88,32 +115,65 @@ class RepeatabilityExperimentTests(unittest.TestCase):
                 planned_joints=JointAngles(0.0, 0.0, 0.0, 0.0),
                 planned_motors=MotorAngles(168.486, 179.824, 355.869, 82.881),
                 samples=[telemetry_snapshot(0), telemetry_snapshot(1)],
+                planned_path=(
+                    PlannedPathPhase(
+                        cycle=1,
+                        point_name="P09",
+                        phase="TOUCH",
+                        physical_target=XYZ(230.0, 70.0, 0.0),
+                        internal_target=XYZ(230.0, -70.0, 0.0),
+                        planned_joints=JointAngles(0.0, 0.0, 0.0, 0.0),
+                        planned_motors=MotorAngles(168.486, 179.824, 355.869, 82.881),
+                        fk_check_physical=XYZ(230.0, 70.0, 0.0),
+                        fk_error_mm=0.0,
+                    ),
+                ),
             )
             writer.add_touch(record)
-            writer.update_manual(
-                record,
-                ManualMeasurement(measured_xyz=XYZ(248.0, 70.0, 0.0), note="laser"),
-            )
 
             self.assertTrue(writer.path.exists())
+            self.assertTrue(writer.detail_path.exists())
             workbook = load_workbook(writer.path, data_only=False, read_only=True)
             try:
                 self.assertEqual(
                     workbook.sheetnames,
-                    ["Touch Summary", "Telemetry Samples", "Run Config", "Run Events"],
+                    ["Point Results", "Error Plots", "Point Error Summary", "Planned Point Path", "Run Config"],
                 )
-                summary = workbook["Touch Summary"]
+                summary = workbook["Point Results"]
                 headers = [cell.value for cell in summary[1]]
                 row = [cell.value for cell in summary[2]]
                 self.assertEqual(row[headers.index("point")], "P09")
-                self.assertAlmostEqual(row[headers.index("manual_error_x_mm")], 18.0)
-                self.assertEqual(workbook["Telemetry Samples"].max_row, 3)
-                self.assertGreater(workbook["Run Events"].max_row, 1)
+                self.assertAlmostEqual(row[headers.index("target_x_mm")], 230.0)
+                self.assertAlmostEqual(row[headers.index("fk_mean_x_mm")], 230.05)
+                self.assertFalse(any(h.startswith("manual_") for h in headers))
+                self.assertAlmostEqual(row[headers.index("fk_error_norm_mm")], (0.05**2 + 0.025**2)**0.5)
+                self.assertEqual(workbook["Planned Point Path"].max_row, 2)
             finally:
                 workbook.close()
+            details = load_workbook(writer.detail_path, data_only=False, read_only=True)
+            try:
+                self.assertEqual(details.sheetnames, ["Telemetry Samples", "Run Events"])
+                self.assertEqual(details["Telemetry Samples"].max_row, 3)
+                self.assertGreater(details["Run Events"].max_row, 1)
+            finally:
+                details.close()
+            motors = load_workbook(writer.motor_path, read_only=False)
+            try:
+                sheet = motors["Motor Angle Comparison"]
+                data = dict(zip([c.value for c in sheet[1]], [c.value for c in sheet[2]]))
+                self.assertAlmostEqual(data["id11_actual_motor_deg"], 168.486)
+                self.assertAlmostEqual(data["id11_raw_mean"], 1917.5)
+                self.assertEqual(len(motors["Motor Error Plot"]._charts), 1)
+            finally:
+                motors.close()
         finally:
             output_path.unlink(missing_ok=True)
+            details_path.unlink(missing_ok=True)
+            output_path.with_name(output_path.stem + "_motor_angles.xlsx").unlink(missing_ok=True)
             output_path.with_name("repeatability_test_output.saving.xlsx").unlink(missing_ok=True)
+            details_path.with_name("repeatability_test_output_details.saving.xlsx").unlink(
+                missing_ok=True
+            )
 
 
 if __name__ == "__main__":
