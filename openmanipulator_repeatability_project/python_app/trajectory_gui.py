@@ -16,9 +16,12 @@ from experiment_frame import (
     experiment_points,
     forward_kinematics_physical,
     inverse_kinematics_physical,
+    physical_to_internal,
 )
 from kinematics import (
+    JointAngles,
     KinematicsError,
+    MotorAngles,
     XYZ,
     forward_kinematics,
     motor_to_fk_angles,
@@ -35,6 +38,7 @@ from point_experiment import (
 )
 from repeatability_experiment import (
     ManualMeasurement,
+    PlannedPathPhase,
     RepeatabilityRunConfig,
     RepeatabilityWorkbook,
     TouchRecord,
@@ -75,6 +79,7 @@ class TrajectoryGUI(ttk.Frame):
         self.ik_preview = tk.StringVar(value="Enter XYZ, then preview before moving")
         self.selected_experiment_point = tk.StringVar(value="P04")
         self.repeatability_repetitions = tk.StringVar(value=str(config.DEFAULT_REPETITIONS))
+        self.repeatability_speed = tk.StringVar(value="1.0")
         self.repeatability_sample_count = tk.StringVar(value=str(config.TOUCH_SAMPLE_COUNT))
         self.repeatability_sample_interval_ms = tk.StringVar(
             value=str(round(config.TOUCH_SAMPLE_INTERVAL_SECONDS * 1000.0))
@@ -305,7 +310,7 @@ class TrajectoryGUI(ttk.Frame):
 
         window = tk.Toplevel(self.master)
         self.repeatability_window = window
-        window.title("Repeatability Experiment Setup and Manual Measurement")
+        window.title("Repeatability Experiment Settings and Results")
         window.geometry("980x520")
         window.minsize(760, 420)
         window.resizable(True, True)
@@ -330,11 +335,9 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Entry(selection, textvariable=self.repeatability_sample_count, width=6).grid(row=2, column=5, sticky="w")
         ttk.Label(selection, text="Interval (ms)").grid(row=2, column=6, sticky="e", padx=(12, 2))
         ttk.Entry(selection, textvariable=self.repeatability_sample_interval_ms, width=6).grid(row=2, column=7, sticky="w")
-        ttk.Checkbutton(
-            selection,
-            text="Pause at every touch for manual measurement",
-            variable=self.pause_for_manual_measurement,
-        ).grid(row=3, column=0, columnspan=8, sticky="w", padx=4, pady=(5, 0))
+        ttk.Label(selection, text="Motion speed (0.25–1.0)").grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
+        ttk.Entry(selection, textvariable=self.repeatability_speed, width=8).grid(row=3, column=3, sticky="w")
+        ttk.Label(selection, text="1.0 = existing speed; 0.5 = half speed").grid(row=3, column=4, columnspan=4, sticky="w")
         ttk.Button(selection, text="RUN CHECKED SEQUENCE", command=self.run_repeatability_sequence).grid(
             row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
         )
@@ -342,37 +345,7 @@ class TrajectoryGUI(ttk.Frame):
             row=4, column=4, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
         )
 
-        manual = ttk.LabelFrame(window, text="Manual touch measurement (physical frame, millimetres)", padding=8)
-        manual.grid(row=1, column=0, sticky="ew", padx=10, pady=4)
-        ttk.Label(manual, textvariable=self.manual_measurement_status, wraplength=920).grid(
-            row=0, column=0, columnspan=10, sticky="w"
-        )
-        for column, axis in enumerate(("X", "Y", "Z")):
-            ttk.Label(manual, text=f"Measured {axis}").grid(row=1, column=column * 2, sticky="e", padx=(4, 2))
-            ttk.Entry(manual, textvariable=self.manual_measurement_values[axis], width=9).grid(
-                row=1, column=column * 2 + 1, sticky="w"
-            )
-        ttk.Label(manual, text="Distance error").grid(row=1, column=6, sticky="e", padx=(8, 2))
-        ttk.Entry(manual, textvariable=self.manual_distance_error, width=9).grid(row=1, column=7, sticky="w")
-        ttk.Label(manual, text="Note").grid(row=2, column=0, sticky="e", padx=(4, 2))
-        ttk.Entry(manual, textvariable=self.manual_measurement_note).grid(
-            row=2, column=1, columnspan=5, sticky="ew"
-        )
-        ttk.Button(
-            manual,
-            text="SAVE MEASUREMENT + CONTINUE",
-            command=self.save_manual_touch_and_continue,
-        ).grid(row=2, column=6, sticky="ew", padx=3)
-        ttk.Button(
-            manual,
-            text="SKIP + CONTINUE",
-            command=self.skip_manual_touch_and_continue,
-        ).grid(row=2, column=7, sticky="ew", padx=3)
-        ttk.Label(
-            manual,
-            text="Enter all X/Y/Z, or only distance error. Example: 24.8 cm = 248 mm. Do not push the arm while torque is ON.",
-        ).grid(row=3, column=0, columnspan=10, sticky="w", pady=(4, 0))
-        manual.columnconfigure(5, weight=1)
+        ttk.Label(window, text="Automatic encoder sampling; XYZ and motor error plots are saved with each run.").grid(row=1, column=0, sticky="w", padx=10, pady=8)
 
         instructions = tk.Text(window, height=8, wrap="word")
         instructions.grid(row=2, column=0, sticky="nsew", padx=10, pady=(4, 10))
@@ -383,9 +356,11 @@ class TrajectoryGUI(ttk.Frame):
             "2. Set repetitions and touch samples.\n"
             "3. Connect, enable torque, and start from WORK in the main window.\n"
             "4. Press RUN CHECKED SEQUENCE and confirm the preflight.\n"
-            "5. At each touch, read the automatic FK result above. Measure the real TCP. "
-            "Enter physical X/Y/Z in millimetres or a measured scalar distance error, then continue.\n"
-            "6. The robot retracts and returns to WORK after every point. The workbook is autosaved after each touch."
+            "5. Each touch automatically captures the encoder samples.\n"
+            "6. The robot retracts and returns to WORK after every point.\n"
+            "7. Open repeatability_point_results.xlsx for XYZ comparisons and Error Plots; "
+            "open the motor_angles workbook for IK versus read motor angles. "
+            "Detailed telemetry is saved separately. Results are autosaved after each touch."
         )
         instructions.configure(state="disabled")
 
@@ -615,7 +590,7 @@ class TrajectoryGUI(ttk.Frame):
             repetitions,
             sample_count,
             sample_interval_ms,
-            bool(self.pause_for_manual_measurement.get()),
+            False,
         )
 
     def run_repeatability_sequence(self) -> None:
@@ -631,6 +606,9 @@ class TrajectoryGUI(ttk.Frame):
             names, repetitions, sample_count, sample_interval_ms, pause_manual = (
                 self._repeatability_settings()
             )
+            speed_scale = float(self.repeatability_speed.get())
+            if not math.isfinite(speed_scale) or not 0.25 <= speed_scale <= 1.0:
+                raise ValueError("Repeatability motion speed must be between 0.25 and 1.0")
             state = self.controller.read_robot_state()
             plan = plan_point_experiment(names=names, starting_reference=state.joints)
             self._experiment_plan = plan
@@ -653,6 +631,7 @@ class TrajectoryGUI(ttk.Frame):
             details = (
                 f"Checked points: {', '.join(names)}\n"
                 f"Repetitions: {repetitions}; total touches: {total_touches}\n"
+                f"Motion speed scale: {speed_scale:.2f}\n"
                 f"Each touch: {sample_count} telemetry samples at {sample_interval_ms} ms.\n"
                 "After each point the robot retracts and returns to WORK.\n"
                 f"{manual_text}\n\n"
@@ -673,6 +652,7 @@ class TrajectoryGUI(ttk.Frame):
                 sample_count=sample_count,
                 sample_interval_ms=sample_interval_ms,
                 pause_for_manual_measurement=pause_manual,
+                speed_scale=speed_scale,
             )
             workbook = RepeatabilityWorkbook(self.output_dir, run)
             workbook.add_event("repeatability_run_started", details.replace("\n", "; "))
@@ -683,10 +663,10 @@ class TrajectoryGUI(ttk.Frame):
             self._experiment_running = True
             self.experiment_status.set(f"RUNNING 0/{total_touches}")
             self._log(
-                f"Repeatability workbook: {workbook.path}",
+                f"Repeatability files: {workbook.path}; details: {workbook.detail_path}",
                 event="repeatability_run_started",
                 category="motion",
-                context={"run": run, "workbook": workbook.path},
+                context={"run": run, "workbook": workbook.path, "details": workbook.detail_path},
             )
             threading.Thread(
                 target=self._repeatability_run_worker,
@@ -745,6 +725,40 @@ class TrajectoryGUI(ttk.Frame):
             },
         )
 
+    def _planned_path_for_record(self, point, cycle: int) -> tuple[PlannedPathPhase, ...]:
+        phases: list[PlannedPathPhase] = []
+        for phase in (point.approach, point.touch, point.retract):
+            if phase.joint_angles is None or phase.motor_angles is None:
+                continue
+            phases.append(
+                PlannedPathPhase(
+                    cycle=cycle,
+                    point_name=point.name,
+                    phase=phase.phase,
+                    physical_target=phase.physical_target,
+                    internal_target=phase.internal_target,
+                    planned_joints=phase.joint_angles,
+                    planned_motors=phase.motor_angles,
+                    fk_check_physical=phase.physical_fk_check,
+                    fk_error_mm=phase.fk_error_mm,
+                )
+            )
+        work_physical = XYZ(*config.WORK_XYZ_MM)
+        phases.append(
+            PlannedPathPhase(
+                cycle=cycle,
+                point_name=point.name,
+                phase="RETURN_WORK",
+                physical_target=work_physical,
+                internal_target=physical_to_internal(work_physical),
+                planned_joints=JointAngles(*config.WORK_JOINT_DEGREES),
+                planned_motors=MotorAngles(*config.WORK_MOTOR_DEGREES),
+                fk_check_physical=work_physical,
+                fk_error_mm=0.0,
+            )
+        )
+        return tuple(phases)
+
     def _move_repeatability_phase(self, point_name: str, phase, cycle: int) -> None:
         if self._experiment_stop.is_set():
             return
@@ -762,6 +776,13 @@ class TrajectoryGUI(ttk.Frame):
         self._experiment_motion_active = True
         try:
             self.controller.move_motor_angles(phase.motor_angles)
+            errors = self.controller.last_motor_tracking_errors
+            if max(errors) > config.MOTOR_TRACKING_WARNING_DEGREES:
+                details = f"Cycle {cycle} {point_name} {phase.phase}: motor tracking errors ID11–14={tuple(round(e, 3) for e in errors)} deg; accepted within 10-degree collection tolerance"
+                self.logger.log_history("motor_tracking_warning", category="measurement", context={"cycle": cycle, "point": point_name, "phase": phase.phase, "errors_deg": errors})
+                if self._repeatability_workbook is not None:
+                    self._repeatability_workbook.add_event("motor_tracking_warning", details)
+                self.after(0, self._log, "WARNING: " + details)
         finally:
             self._experiment_motion_active = False
         wait_seconds = (
@@ -805,6 +826,7 @@ class TrajectoryGUI(ttk.Frame):
         total_touches = len(names) * repetitions
         touch_index = 0
         try:
+            self.controller.set_motion_speed(workbook.run.speed_scale)
             for cycle in range(1, repetitions + 1):
                 for name in names:
                     if self._experiment_stop.is_set():
@@ -858,6 +880,7 @@ class TrajectoryGUI(ttk.Frame):
                         planned_joints=point.touch.joint_angles,
                         planned_motors=point.touch.motor_angles,
                         samples=samples,
+                        planned_path=self._planned_path_for_record(point, cycle),
                     )
                     workbook.add_touch(record)
                     fk_error = record.fk_error()
@@ -872,14 +895,13 @@ class TrajectoryGUI(ttk.Frame):
                             "fk_error_xyz_norm": fk_error,
                             "sample_count": len(samples),
                             "workbook": workbook.path,
+                            "details": workbook.detail_path,
                         },
                     )
                     self.after(
                         0,
-                        self._show_manual_touch_pause,
-                        record,
-                        total_touches,
-                        pause_manual,
+                        self._log,
+                        f"Touch {touch_index}/{total_touches}: {name}; FK={record.mean_physical_fk()}; error={fk_error[3]:.3f} mm; samples saved automatically",
                     )
 
                     severity = tcp_error_severity(fk_error[3])
@@ -894,18 +916,6 @@ class TrajectoryGUI(ttk.Frame):
                             self._log,
                             f"WARNING: cycle {cycle} {name} FK error {fk_error[3]:.3f} mm",
                         )
-
-                    if pause_manual:
-                        self._manual_measurement_continue.clear()
-                        while not self._experiment_stop.is_set():
-                            if self._manual_measurement_continue.wait(0.1):
-                                break
-                        if self._experiment_stop.is_set():
-                            break
-                        manual = None if self._manual_measurement_skipped else self._manual_measurement_payload
-                        workbook.update_manual(record, manual)
-                    else:
-                        workbook.update_manual(record, None)
 
                     self._move_repeatability_phase(name, point.retract, cycle)
                     if self._experiment_stop.is_set():
@@ -955,6 +965,11 @@ class TrajectoryGUI(ttk.Frame):
                 )
             self.after(0, self._finish_repeatability_run, True, exc)
         finally:
+            try:
+                if self.controller.status.connected:
+                    self.controller.set_motion_speed(1.0)
+            except Exception as speed_exc:
+                self.logger.log_error("repeatability_speed_reset_failed", speed_exc)
             self._telemetry_target = None
             self._manual_measurement_continue.set()
 
@@ -1030,24 +1045,27 @@ class TrajectoryGUI(ttk.Frame):
         self._experiment_motion_active = False
         self._pending_touch_record = None
         workbook_path = self._repeatability_workbook.path if self._repeatability_workbook else None
+        details_path = (
+            self._repeatability_workbook.detail_path if self._repeatability_workbook else None
+        )
         if exc is not None:
             self.experiment_status.set("ERROR / STOPPED")
             self._error(
                 exc,
                 event="repeatability_run_failed",
-                context={"workbook": workbook_path},
+                context={"workbook": workbook_path, "details": details_path},
             )
         elif stopped:
             self.experiment_status.set("STOPPED")
             self._log(
-                f"Repeatability stopped; saved {workbook_path}",
+                f"Repeatability stopped; saved {workbook_path}; details {details_path}",
                 event="repeatability_run_stopped",
                 category="motion",
             )
         else:
             self.experiment_status.set("COMPLETE")
             self._log(
-                f"Repeatability complete; saved {workbook_path}",
+                f"Repeatability complete; saved {workbook_path}; details {details_path}",
                 event="repeatability_run_completed",
                 category="motion",
             )
