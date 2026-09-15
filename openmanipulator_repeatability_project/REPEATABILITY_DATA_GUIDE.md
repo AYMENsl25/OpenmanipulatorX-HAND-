@@ -14,7 +14,7 @@ Start with one point, one repetition, and speed 0.5. Then test several points an
 
 Each session saves files under `experiment_results/<session-id>/`:
 
-- `repeatability_point_results.xlsx`: target XYZ, mean encoder FK XYZ, signed errors (actual minus target), distance error, and within-touch sample noise. Includes planned approach/touch/retract/WORK path, run settings, and per-point error summary.
+- `repeatability_point_results.xlsx`: target XYZ, averaged encoder FK XYZ (`fk_actual_x_mm`, `fk_actual_y_mm`, `fk_actual_z_mm`), signed errors (actual minus target), distance error, and within-touch sample noise. The `fk_actual_*` values remain the average of the configured FK samples for one touch; only their names changed. Includes planned approach/touch/retract/WORK path, run settings, and per-point error summary.
 - `repeatability_point_results_motor_angles.xlsx`: planned IK motor angles versus read motor angles; planned calibrated q versus read q; angle errors and mean RAW counts.
 - `repeatability_telemetry_details.xlsx`: individual samples including position, velocity, current, PWM, voltage, temperature and hardware status, plus run events.
 

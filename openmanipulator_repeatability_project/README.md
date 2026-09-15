@@ -241,6 +241,8 @@ Open `repeatability_point_results.xlsx` first. It contains:
 
 - `Point Results`: target physical XYZ, FK-from-encoder XYZ, signed XYZ error,
   distance error, and sample noise.
+- The averaged FK columns are named `fk_actual_x_mm`, `fk_actual_y_mm`, and
+  `fk_actual_z_mm`; each remains the average of all samples for that touch.
 - `Error Plots`: XYZ error by touch, distance error/noise, and per-point error bars.
 - `Point Error Summary`: mean/max error and across-touch XYZ standard deviations.
 - `Planned Point Path`: the planned approach, touch, retract, and return-to-WORK
@@ -265,6 +267,16 @@ It does not prove physical TCP accuracy because link dimensions, compliance,
 backlash, table contact, and external measurement error are not visible to the
 encoders. Independent physical measurements would be needed to separate those
 effects; this automatic dataset does not collect external metrology.
+
+## Teaching ground clamp
+
+Teaching retains every recorded time and motor angle. For replay, physical FK
+values below the calibrated ground plane are clamped to `Z=0`; X and Y are not
+changed. `trajectory_xyz.xlsx` therefore cannot command a negative teaching Z.
+`trajectory_full.xlsx` includes `FK_raw_Z_mm` and `Z_ground_clamped` so the
+original FK result and every correction remain auditable. The in-memory teach
+start/end points use the same ground-safe XYZ values. This is a replay safety
+policy, not an FK calibration correction.
 
 ## Offline checks
 

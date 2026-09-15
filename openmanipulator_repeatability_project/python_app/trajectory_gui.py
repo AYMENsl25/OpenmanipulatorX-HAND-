@@ -43,6 +43,7 @@ from repeatability_experiment import (
     RepeatabilityWorkbook,
     TouchRecord,
 )
+from repeatability_live_plots import RepeatabilityLivePlots
 from serial_controller import ControllerError, OpenCRController, available_ports
 from trajectory import (
     TrajectoryPoint,
@@ -51,6 +52,8 @@ from trajectory import (
     load_xyz_workbook,
     save_manual_poses,
     save_workbooks,
+    ground_safe_teaching_xyz,
+    ground_safe_teaching_points,
     validate_xyz_trajectory,
     xyz_endpoint_points,
 )
@@ -63,6 +66,7 @@ class TrajectoryGUI(ttk.Frame):
         self.port = tk.StringVar()
         self.torque = tk.StringVar(value="UNKNOWN")
         self.status = tk.StringVar(value="Disconnected")
+        self.connection_state = tk.StringVar(value="DISCONNECTED")
         self.recording = tk.StringVar(value="OFF")
         self.playback = tk.StringVar(value="OFF")
         self.live_read_status = tk.StringVar(value="OFF")
@@ -117,6 +121,7 @@ class TrajectoryGUI(ttk.Frame):
         self._pending_touch_record: TouchRecord | None = None
         self._repeatability_workbook: RepeatabilityWorkbook | None = None
         self.repeatability_window: tk.Toplevel | None = None
+        self.repeatability_plots: RepeatabilityLivePlots | None = None
         self.output_dir = Path(__file__).resolve().parents[1]
         self.logger = ExperimentLogger(project_root=self.output_dir)
         self._experiment_plan: ExperimentPlan | None = None
@@ -125,6 +130,7 @@ class TrajectoryGUI(ttk.Frame):
         self._telemetry_target = None
         self._telemetry_sample_index = 0
         self._session_started = time.monotonic()
+        self._configure_styles()
         self._build()
         self._refresh_ports()
         self.master.protocol("WM_DELETE_WINDOW", self._close)
@@ -135,23 +141,67 @@ class TrajectoryGUI(ttk.Frame):
         )
         self._log(f"Session logs: {self.logger.session_dir}", persist=False)
 
+    def _configure_styles(self) -> None:
+        style = ttk.Style(self.master)
+        style.configure("Title.TLabel", font=("TkDefaultFont", 16, "bold"))
+        style.configure("Subtitle.TLabel", foreground="#4b5563")
+        style.configure("State.TLabel", font=("TkDefaultFont", 9, "bold"), padding=(8, 4))
+        style.configure("Primary.TButton", font=("TkDefaultFont", 9, "bold"))
+        style.configure("Danger.TButton", font=("TkDefaultFont", 9, "bold"))
+        style.configure("Status.TLabel", padding=(8, 5), relief="sunken")
+
+    def _header(self) -> ttk.Frame:
+        frame = ttk.Frame(self)
+        frame.columnconfigure(0, weight=1)
+        ttk.Label(frame, text="OpenMANIPULATOR-X Lab Controller", style="Title.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Label(frame, text="Teach, validate, run Cartesian experiments and inspect repeatability", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w")
+        ttk.Label(frame, text="Connection:").grid(row=0, column=1, sticky="e", padx=(10, 2))
+        ttk.Label(frame, textvariable=self.connection_state, style="State.TLabel").grid(row=0, column=2, sticky="e")
+        ttk.Label(frame, text="Torque:").grid(row=1, column=1, sticky="e", padx=(10, 2))
+        ttk.Label(frame, textvariable=self.torque, style="State.TLabel").grid(row=1, column=2, sticky="e")
+        ttk.Button(frame, text="Quick Help", command=self._show_quick_help).grid(row=0, column=3, rowspan=2, padx=(12, 0), sticky="ns")
+        return frame
+
     def _build(self) -> None:
         self.grid(sticky="nsew")
         self.master.rowconfigure(0, weight=1)
         self.master.columnconfigure(0, weight=1)
-        self.rowconfigure(1, weight=1)
+        self.rowconfigure(2, weight=1)
         self.columnconfigure(0, weight=1)
-        self._connection().grid(row=0, column=0, sticky="ew", pady=(0, 4))
+        self._header().grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._connection().grid(row=1, column=0, sticky="ew", pady=(0, 8))
 
-        vertical = ttk.Panedwindow(self, orient=tk.VERTICAL)
-        vertical.grid(row=1, column=0, sticky="nsew")
+        notebook = ttk.Notebook(self)
+        notebook.grid(row=2, column=0, sticky="nsew")
+        control_tab = ttk.Frame(notebook, padding=6)
+        experiment_tab = ttk.Frame(notebook, padding=6)
+        log_tab = ttk.Frame(notebook, padding=6)
+        for tab in (control_tab, experiment_tab, log_tab):
+            tab.rowconfigure(0, weight=1)
+            tab.columnconfigure(0, weight=1)
+        notebook.add(control_tab, text="1  Teach and Cartesian Control")
+        notebook.add(experiment_tab, text="2  Point and Repeatability Experiment")
+        notebook.add(log_tab, text="3  Session Log")
 
-        upper = ttk.Panedwindow(vertical, orient=tk.HORIZONTAL)
+        upper = ttk.Panedwindow(control_tab, orient=tk.HORIZONTAL)
+        upper.grid(row=0, column=0, sticky="nsew")
         upper.add(self._controls(upper), weight=3)
         upper.add(self._replay(upper), weight=2)
-        vertical.add(upper, weight=4)
-        vertical.add(self._workspace_preview(vertical), weight=2)
-        vertical.add(self._status(vertical), weight=1)
+        self._workspace_preview(experiment_tab).grid(row=0, column=0, sticky="nsew")
+        self._status(log_tab).grid(row=0, column=0, sticky="nsew")
+        ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w").grid(row=3, column=0, sticky="ew", pady=(6, 0))
+
+    def _show_quick_help(self) -> None:
+        messagebox.showinfo(
+            "OpenMANIPULATOR-X workflow",
+            "1. Connect to the detected OpenCR port.\n"
+            "2. Use Torque ON only after clearing the workspace.\n"
+            "3. Teach by hand with torque OFF, then save and validate XYZ.\n"
+            "4. Analyze experiment points before running any motion.\n"
+            "5. Start repeatability with one point and one repetition first.\n\n"
+            "The bottom status bar is always visible. Full messages are in the Session Log tab.",
+            parent=self.master,
+        )
 
     def _frame(self, title: str, parent=None) -> ttk.LabelFrame:
         frame = ttk.LabelFrame(parent or self, text=title, padding=8)
@@ -159,32 +209,35 @@ class TrajectoryGUI(ttk.Frame):
         return frame
 
     def _connection(self) -> ttk.LabelFrame:
-        frame = self._frame("Connection")
-        ttk.Label(frame, text="COM port").grid(row=0, column=0, sticky="w")
+        frame = self._frame("OpenCR connection and safe poses")
+        for column in (1, 3, 4, 5, 6, 7, 8):
+            frame.columnconfigure(column, weight=1)
+        ttk.Label(frame, text="Port").grid(row=0, column=0, sticky="w")
         self.port_box = ttk.Combobox(frame, textvariable=self.port, width=15)
-        self.port_box.grid(row=0, column=1, sticky="ew")
-        ttk.Button(frame, text="Refresh", command=self._refresh_ports).grid(row=0, column=2, padx=3)
-        ttk.Button(frame, text="CONNECT", command=self.connect).grid(row=1, column=0, pady=4)
-        ttk.Button(frame, text="DISCONNECT", command=self.disconnect).grid(row=1, column=1, pady=4)
-        ttk.Button(frame, text="TORQUE ON", command=self.torque_on).grid(row=1, column=2, padx=3)
-        ttk.Button(frame, text="TORQUE OFF", command=self.torque_off).grid(row=2, column=2, padx=3)
-        ttk.Button(frame, text="REST (STRAIGHT)", command=self.rest).grid(row=2, column=0, pady=4)
-        ttk.Button(frame, text="WORK (DOWN)", command=self.work).grid(row=2, column=1, pady=4)
-        ttk.Button(frame, text="READ ANGLES NOW", command=self.read_angles_now).grid(row=3, column=0, pady=4)
-        ttk.Button(frame, text="START LIVE READ", command=self.start_live_read).grid(row=3, column=1, pady=4)
-        ttk.Button(frame, text="STOP LIVE READ", command=self.stop_live_read).grid(row=3, column=2, padx=3)
-        ttk.Label(frame, text="Live interval (ms)").grid(row=4, column=0, sticky="w")
-        ttk.Entry(frame, textvariable=self.live_interval_ms, width=8).grid(row=4, column=1, sticky="w")
-        ttk.Label(frame, textvariable=self.live_read_status).grid(row=4, column=2, sticky="w")
+        self.port_box.grid(row=0, column=1, sticky="ew", padx=(4, 8))
+        ttk.Button(frame, text="Refresh ports", command=self._refresh_ports).grid(row=0, column=2, padx=3)
+        ttk.Button(frame, text="Connect", style="Primary.TButton", command=self.connect).grid(row=0, column=3, sticky="ew", padx=3)
+        ttk.Button(frame, text="Disconnect", command=self.disconnect).grid(row=0, column=4, sticky="ew", padx=3)
+        ttk.Separator(frame, orient="vertical").grid(row=0, column=5, sticky="ns", padx=6)
+        ttk.Button(frame, text="Torque ON", style="Primary.TButton", command=self.torque_on).grid(row=0, column=6, sticky="ew", padx=3)
+        ttk.Button(frame, text="Torque OFF", style="Danger.TButton", command=self.torque_off).grid(row=0, column=7, sticky="ew", padx=3)
+        ttk.Button(frame, text="REST (straight)", command=self.rest).grid(row=1, column=3, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="WORK (down)", command=self.work).grid(row=1, column=4, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="Read once", command=self.read_angles_now).grid(row=1, column=6, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="Start live read", command=self.start_live_read).grid(row=1, column=7, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="Stop live read", command=self.stop_live_read).grid(row=1, column=8, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Label(frame, text="Interval ms").grid(row=1, column=0, sticky="w", pady=(6, 0))
+        ttk.Entry(frame, textvariable=self.live_interval_ms, width=8).grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(6, 0))
+        ttk.Label(frame, textvariable=self.live_read_status, style="State.TLabel").grid(row=1, column=2, sticky="w", pady=(6, 0))
         return frame
 
     def _controls(self, parent=None) -> ttk.LabelFrame:
-        frame = self._frame("Teach By Hand", parent)
+        frame = self._frame("Teach by hand and inspect the current pose", parent)
         frame.columnconfigure(3, weight=1)
-        ttk.Button(frame, text="START TEACHING", command=self.start_teaching).grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="STOP TEACHING", command=self.stop_teaching).grid(row=1, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="SAVE TRAJECTORY", command=self.save_trajectory).grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="CAPTURE + SAVE MANUAL POSE", command=self.read_manual_pose).grid(row=3, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Start teaching", style="Primary.TButton", command=self.start_teaching).grid(row=0, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Stop teaching and save", command=self.stop_teaching).grid(row=1, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Save current trajectory", command=self.save_trajectory).grid(row=2, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Capture one calibration pose", command=self.read_manual_pose).grid(row=3, column=0, columnspan=2, sticky="ew", pady=3)
         self._label_value(frame, 4, "Recording", self.recording)
         self._label_value(frame, 5, "Time", self.elapsed)
         self._label_value(frame, 6, "Points", self.count)
@@ -205,8 +258,8 @@ class TrajectoryGUI(ttk.Frame):
                 f"finger-center TCP~({config.WORK_XYZ_MM[0]:.1f},0,{config.WORK_XYZ_MM[2]:.1f}) mm"
             ),
         ).grid(row=15, column=0, columnspan=4, sticky="w", pady=(8, 0))
-        ttk.Button(frame, text="GO TO TEACH START", command=self.go_to_teach_start).grid(row=16, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="GO TO TEACH END", command=self.go_to_teach_end).grid(row=17, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Go to taught start", command=self.go_to_teach_start).grid(row=16, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Go to taught end", command=self.go_to_teach_end).grid(row=17, column=0, columnspan=2, sticky="ew", pady=3)
         return frame
 
     def _replay(self, parent=None) -> ttk.LabelFrame:
@@ -217,10 +270,10 @@ class TrajectoryGUI(ttk.Frame):
         for row, axis in enumerate(("X", "Y", "Z"), start=1):
             ttk.Label(frame, text=f"Target {axis} (mm)").grid(row=row, column=0, sticky="w")
             ttk.Entry(frame, textvariable=self.target_xyz[axis], width=12).grid(row=row, column=1, sticky="ew")
-        ttk.Button(frame, text="PREVIEW NEAREST IK", command=self.preview_xyz).grid(
+        ttk.Button(frame, text="1. Preview nearest IK", command=self.preview_xyz).grid(
             row=4, column=0, columnspan=2, sticky="ew", pady=3
         )
-        ttk.Button(frame, text="MOVE TO XYZ", command=self.move_to_xyz).grid(
+        ttk.Button(frame, text="2. Move safely to XYZ", style="Primary.TButton", command=self.move_to_xyz).grid(
             row=5, column=0, columnspan=2, sticky="ew", pady=3
         )
         preview_label = ttk.Label(frame, textvariable=self.ik_preview, wraplength=390)
@@ -232,12 +285,12 @@ class TrajectoryGUI(ttk.Frame):
             lambda event: preview_label.configure(wraplength=max(220, event.width - 24)),
         )
         ttk.Separator(frame).grid(row=7, column=0, columnspan=2, sticky="ew", pady=4)
-        ttk.Button(frame, text="LOAD XYZ TRAJECTORY", command=self.load_xyz).grid(row=8, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="VALIDATE XYZ ONLY", command=self.validate).grid(row=9, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Load XYZ trajectory", command=self.load_xyz).grid(row=8, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Validate loaded trajectory", command=self.validate).grid(row=9, column=0, columnspan=2, sticky="ew", pady=3)
         ttk.Label(frame, text="Speed scale").grid(row=10, column=0, sticky="w")
         ttk.Entry(frame, textvariable=self.speed, width=8).grid(row=10, column=1, sticky="w")
-        ttk.Button(frame, text="PLAY XYZ TRAJECTORY", command=self.play).grid(row=11, column=0, columnspan=2, sticky="ew", pady=3)
-        ttk.Button(frame, text="STOP", command=self.stop).grid(row=12, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Play validated trajectory", style="Primary.TButton", command=self.play).grid(row=11, column=0, columnspan=2, sticky="ew", pady=3)
+        ttk.Button(frame, text="Stop playback", style="Danger.TButton", command=self.stop).grid(row=12, column=0, columnspan=2, sticky="ew", pady=3)
         self._label_value(frame, 13, "Playback", self.playback)
         self._label_value(frame, 14, "Loaded points", self.count)
         return frame
@@ -253,7 +306,7 @@ class TrajectoryGUI(ttk.Frame):
             state="readonly",
             width=8,
         ).grid(row=0, column=1, sticky="w")
-        ttk.Button(frame, text="LOAD POINT INTO XYZ", command=self.load_experiment_point).grid(
+        ttk.Button(frame, text="Load point into XYZ", command=self.load_experiment_point).grid(
             row=0, column=2, padx=5, sticky="w"
         )
         ttk.Label(
@@ -262,11 +315,11 @@ class TrajectoryGUI(ttk.Frame):
         ).grid(row=0, column=3, sticky="w")
         action_bar = ttk.Frame(frame)
         action_bar.grid(row=1, column=0, columnspan=4, sticky="ew", pady=(5, 2))
-        ttk.Button(action_bar, text="ANALYZE ALL POINTS", command=self.analyze_experiment_points).pack(side="left", padx=(0, 4))
-        ttk.Button(action_bar, text="RUN SELECTED POINT", command=self.run_selected_point).pack(side="left", padx=4)
-        ttk.Button(action_bar, text="RUN ALL REACHABLE", command=self.run_all_reachable).pack(side="left", padx=4)
-        ttk.Button(action_bar, text="REPEATABILITY SETUP", command=self._open_repeatability_window).pack(side="left", padx=4)
-        ttk.Button(action_bar, text="STOP POINT TEST", command=self.stop_point_experiment).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="1. Analyze all points", command=self.analyze_experiment_points).pack(side="left", padx=(0, 4))
+        ttk.Button(action_bar, text="Run selected point", command=self.run_selected_point).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="Run all reachable", command=self.run_all_reachable).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="Repeatability setup", style="Primary.TButton", command=self._open_repeatability_window).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).pack(side="left", padx=4)
         ttk.Label(action_bar, text="Experiment:").pack(side="left", padx=(12, 2))
         ttk.Label(action_bar, textvariable=self.experiment_status).pack(side="left")
 
@@ -310,23 +363,23 @@ class TrajectoryGUI(ttk.Frame):
 
         window = tk.Toplevel(self.master)
         self.repeatability_window = window
-        window.title("Repeatability Experiment Settings and Results")
+        window.title("Repeatability Experiment - Setup and Results")
         window.geometry("980x520")
         window.minsize(760, 420)
         window.resizable(True, True)
         window.columnconfigure(0, weight=1)
         window.rowconfigure(2, weight=1)
 
-        selection = ttk.LabelFrame(window, text="Point sequence and repetitions", padding=8)
+        selection = ttk.LabelFrame(window, text="1. Select points   2. Configure collection   3. Run", padding=8)
         selection.grid(row=0, column=0, sticky="ew", padx=10, pady=(10, 4))
         for index, (name, selected) in enumerate(self.experiment_point_selected.items()):
             ttk.Checkbutton(selection, text=name, variable=selected).grid(
                 row=index // 6, column=index % 6, sticky="w", padx=7, pady=2
             )
-        ttk.Button(selection, text="SELECT ALL", command=self._select_all_experiment_points).grid(
+        ttk.Button(selection, text="Select all", command=self._select_all_experiment_points).grid(
             row=2, column=0, padx=4, pady=(6, 0), sticky="ew"
         )
-        ttk.Button(selection, text="CLEAR", command=self._clear_experiment_points).grid(
+        ttk.Button(selection, text="Clear selection", command=self._clear_experiment_points).grid(
             row=2, column=1, padx=4, pady=(6, 0), sticky="ew"
         )
         ttk.Label(selection, text="Repetitions").grid(row=2, column=2, sticky="e", padx=(12, 2))
@@ -338,11 +391,14 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Label(selection, text="Motion speed (0.25–1.0)").grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
         ttk.Entry(selection, textvariable=self.repeatability_speed, width=8).grid(row=3, column=3, sticky="w")
         ttk.Label(selection, text="1.0 = existing speed; 0.5 = half speed").grid(row=3, column=4, columnspan=4, sticky="w")
-        ttk.Button(selection, text="RUN CHECKED SEQUENCE", command=self.run_repeatability_sequence).grid(
+        ttk.Button(selection, text="Run checked sequence", style="Primary.TButton", command=self.run_repeatability_sequence).grid(
             row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
         )
-        ttk.Button(selection, text="STOP", command=self.stop_point_experiment).grid(
+        ttk.Button(selection, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).grid(
             row=4, column=4, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
+        )
+        ttk.Button(selection, text="Show live plots", command=self._show_repeatability_plots).grid(
+            row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=(6, 0)
         )
 
         ttk.Label(window, text="Automatic encoder sampling; XYZ and motor error plots are saved with each run.").grid(row=1, column=0, sticky="w", padx=10, pady=8)
@@ -376,6 +432,18 @@ class TrajectoryGUI(ttk.Frame):
             self.repeatability_window = None
 
         window.protocol("WM_DELETE_WINDOW", close_window)
+
+    def _show_repeatability_plots(self, *, reset: bool = False) -> None:
+        if self.repeatability_plots is None or not self.repeatability_plots.exists():
+            self.repeatability_plots = RepeatabilityLivePlots(self.master)
+        elif reset:
+            self.repeatability_plots.clear()
+        self.repeatability_plots.show()
+
+    def _append_repeatability_plot_result(self, result) -> None:
+        if self.repeatability_plots is None or not self.repeatability_plots.exists():
+            self.repeatability_plots = RepeatabilityLivePlots(self.master)
+        self.repeatability_plots.add_result(result)
 
     def _draw_workspace(self, highlight=None) -> None:
         if highlight is not None:
@@ -658,6 +726,7 @@ class TrajectoryGUI(ttk.Frame):
             workbook.add_event("repeatability_run_started", details.replace("\n", "; "))
             workbook.save()
             self._repeatability_workbook = workbook
+            self._show_repeatability_plots(reset=True)
             self._experiment_stop.clear()
             self._manual_measurement_continue.clear()
             self._experiment_running = True
@@ -882,8 +951,10 @@ class TrajectoryGUI(ttk.Frame):
                         samples=samples,
                         planned_path=self._planned_path_for_record(point, cycle),
                     )
+                    result = record.calculated_result()
                     workbook.add_touch(record)
-                    fk_error = record.fk_error()
+                    fk_error = result.fk_error
+                    self.after(0, self._append_repeatability_plot_result, result)
                     self.logger.log_history(
                         "repeatability_touch_sampled",
                         category="measurement",
@@ -891,7 +962,7 @@ class TrajectoryGUI(ttk.Frame):
                             "cycle": cycle,
                             "point": name,
                             "touch_index": touch_index,
-                            "mean_fk": record.mean_physical_fk(),
+                            "fk_actual": result.fk_actual,
                             "fk_error_xyz_norm": fk_error,
                             "sample_count": len(samples),
                             "workbook": workbook.path,
@@ -901,7 +972,7 @@ class TrajectoryGUI(ttk.Frame):
                     self.after(
                         0,
                         self._log,
-                        f"Touch {touch_index}/{total_touches}: {name}; FK={record.mean_physical_fk()}; error={fk_error[3]:.3f} mm; samples saved automatically",
+                        f"Touch {touch_index}/{total_touches}: {name}; FK={result.fk_actual}; error={fk_error[3]:.3f} mm; samples saved automatically",
                     )
 
                     severity = tcp_error_severity(fk_error[3])
@@ -1291,13 +1362,22 @@ class TrajectoryGUI(ttk.Frame):
             self._error(exc)
 
     def _status(self, parent=None) -> ttk.LabelFrame:
-        frame = self._frame("Status", parent)
-        ttk.Label(frame, textvariable=self.status).grid(row=0, column=0, sticky="w")
+        frame = self._frame("Session history and error log", parent)
+        ttk.Label(frame, textvariable=self.status, style="State.TLabel").grid(row=0, column=0, sticky="w")
+        ttk.Button(frame, text="Clear visible log", command=self._clear_visible_log).grid(row=0, column=1, sticky="e", padx=(8, 0))
         self.log = tk.Text(frame, height=10, width=90, wrap="word")
         self.log.grid(row=1, column=0, sticky="nsew")
+        log_scroll = ttk.Scrollbar(frame, orient="vertical", command=self.log.yview)
+        log_scroll.grid(row=1, column=1, sticky="ns")
+        self.log.configure(yscrollcommand=log_scroll.set)
         frame.rowconfigure(1, weight=1)
         frame.columnconfigure(0, weight=1)
         return frame
+
+    def _clear_visible_log(self) -> None:
+        """Clear only the on-screen text; persistent JSONL logs remain intact."""
+        self.log.delete("1.0", "end")
+        self._log("Visible log cleared; persistent session logs were kept", persist=False)
 
     def _label_value(self, frame: ttk.LabelFrame, row: int, label: str, variable: tk.StringVar) -> None:
         ttk.Label(frame, text=f"{label}:").grid(row=row, column=0, sticky="w")
@@ -1487,14 +1567,17 @@ class TrajectoryGUI(ttk.Frame):
     def connect(self) -> None:
         try:
             self.controller.connect(self.port.get())
+            self.connection_state.set(f"CONNECTED {self.port.get()}")
             self.torque.set("ON" if self.controller.status.torque_on else "OFF")
-            self._log("Connected")
+            self._log(f"Connected to OpenCR on {self.port.get()}")
         except ControllerError as exc:
+            self.connection_state.set("DISCONNECTED")
             self._error(exc)
 
     def disconnect(self) -> None:
         self.stop_live_read()
         self.controller.disconnect()
+        self.connection_state.set("DISCONNECTED")
         self.torque.set("UNKNOWN")
         self._log("Disconnected")
 
@@ -1607,6 +1690,7 @@ class TrajectoryGUI(ttk.Frame):
     def _receive_teaching(self) -> None:
         try:
             points = self.controller.stop_teaching()
+            points = ground_safe_teaching_points(points)
             full_path, xyz_path = save_workbooks(points, self.output_dir)
             self.after(0, self._finish_receive_teaching, points, full_path, xyz_path)
         except (ControllerError, OSError, ValueError) as exc:
@@ -1618,13 +1702,14 @@ class TrajectoryGUI(ttk.Frame):
         self.count.set(str(len(points)))
         self.elapsed.set(f"{points[-1].time_s:.3f} s" if points else "0.000 s")
         self.torque.set("OFF")
+        clamped_count = sum(ground_safe_teaching_xyz(point.motors)[2] for point in points)
         if full_path.name != "trajectory_full.xlsx":
             self._log(
                 "Excel has the normal trajectory files open. Saved a timestamped pair instead: "
-                f"{full_path.name}, {xyz_path.name}; torque remains OFF"
+                f"{full_path.name}, {xyz_path.name}; {clamped_count} negative FK Z values clamped to ground Z=0 for replay; torque remains OFF"
             )
         else:
-            self._log(f"Saved {len(points)} points: {full_path.name}, {xyz_path.name}; torque remains OFF")
+            self._log(f"Saved {len(points)} points: {full_path.name}, {xyz_path.name}; {clamped_count} negative FK Z values clamped to ground Z=0 for replay; torque remains OFF")
 
     def save_trajectory(self) -> None:
         try:

@@ -144,10 +144,12 @@ class RepeatabilityExperimentTests(unittest.TestCase):
                 row = [cell.value for cell in summary[2]]
                 self.assertEqual(row[headers.index("point")], "P09")
                 self.assertAlmostEqual(row[headers.index("target_x_mm")], 230.0)
-                self.assertAlmostEqual(row[headers.index("fk_mean_x_mm")], 230.05)
+                self.assertAlmostEqual(row[headers.index("fk_actual_x_mm")], 230.05)
+                self.assertNotIn("fk_mean_x_mm", headers)
                 self.assertFalse(any(h.startswith("manual_") for h in headers))
                 self.assertAlmostEqual(row[headers.index("fk_error_norm_mm")], (0.05**2 + 0.025**2)**0.5)
                 self.assertEqual(workbook["Planned Point Path"].max_row, 2)
+                self.assertIs(record.calculated_result(), record.calculated_result())
             finally:
                 workbook.close()
             details = load_workbook(writer.detail_path, data_only=False, read_only=True)

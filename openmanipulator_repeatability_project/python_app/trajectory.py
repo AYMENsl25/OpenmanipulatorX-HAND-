@@ -42,7 +42,7 @@ FULL_HEADERS = (
     "Index", "Time_s",
     "ID11_motor_deg", "ID12_motor_deg", "ID13_motor_deg", "ID14_motor_deg",
     "q1_rad", "q2_rad", "q3_rad", "q4_rad",
-    "X_mm", "Y_mm", "Z_mm",
+    "X_mm", "Y_mm", "Z_mm", "FK_raw_Z_mm", "Z_ground_clamped",
 )
 XYZ_HEADERS = ("Index", "Time_s", "X_mm", "Y_mm", "Z_mm")
 MANUAL_HEADERS = (
@@ -81,6 +81,7 @@ def _add_calibration_sheet(workbook: Workbook) -> None:
     sheet.append(("Coordinate_frame", config.PHYSICAL_FRAME["origin"]))
     sheet.append(("Physical_axes", "+X forward; +Y right; +Z up"))
     sheet.append(("Physical_ground_z_mm", config.GROUND_Z_MM))
+    sheet.append(("Teaching_negative_z_policy", "Replay Z is clamped to physical ground; raw FK Z is retained in Full_Trajectory"))
     sheet.append(("Experiment_config", str(config.EXPERIMENT_CONFIG_PATH)))
     _style_sheet(sheet)
 
@@ -101,6 +102,26 @@ def _validate_point(point: TrajectoryPoint) -> None:
     values = (point.time_s, *point.motors.as_tuple(), point.xyz.x, point.xyz.y, point.xyz.z)
     if not all(math.isfinite(value) for value in values):
         raise ValueError("Trajectory contains a non-finite value")
+
+
+def ground_safe_teaching_xyz(motors: MotorAngles) -> tuple[XYZ, float, bool]:
+    """Convert encoder FK to replay XYZ and clamp only values below ground.
+
+    The unclamped FK Z is returned separately for diagnostics. X and Y and all
+    motor/joint values remain untouched.
+    """
+    raw = forward_kinematics_physical(motors)
+    was_clamped = raw.z < config.GROUND_Z_MM
+    safe = XYZ(raw.x, raw.y, max(raw.z, config.GROUND_Z_MM))
+    return safe, raw.z, was_clamped
+
+
+def ground_safe_teaching_points(points: list[TrajectoryPoint]) -> list[TrajectoryPoint]:
+    """Return teaching points whose replay XYZ never goes below ground."""
+    return [
+        TrajectoryPoint(point.time_s, point.motors, ground_safe_teaching_xyz(point.motors)[0])
+        for point in points
+    ]
 
 
 def _timestamped_path(path: Path, stamp: str) -> Path:
@@ -153,7 +174,7 @@ def save_workbooks(points: list[TrajectoryPoint], directory: str | Path = ".") -
     for index, point in enumerate(points):
         _validate_point(point)
         joints = motor_to_fk_angles(point.motors)
-        xyz_value = forward_kinematics_physical(point.motors)
+        xyz_value, raw_z, was_clamped = ground_safe_teaching_xyz(point.motors)
         sheet.append((
             index,
             point.time_s,
@@ -162,6 +183,8 @@ def save_workbooks(points: list[TrajectoryPoint], directory: str | Path = ".") -
             xyz_value.x,
             xyz_value.y,
             xyz_value.z,
+            raw_z,
+            was_clamped,
         ))
     _style_sheet(sheet)
     _add_calibration_sheet(full)
@@ -170,7 +193,7 @@ def save_workbooks(points: list[TrajectoryPoint], directory: str | Path = ".") -
     sheet.title = "XYZ_Trajectory"
     sheet.append(XYZ_HEADERS)
     for index, point in enumerate(points):
-        xyz_value = forward_kinematics_physical(point.motors)
+        xyz_value, _, _ = ground_safe_teaching_xyz(point.motors)
         sheet.append((index, point.time_s, xyz_value.x, xyz_value.y, xyz_value.z))
     _style_sheet(sheet)
     _add_calibration_sheet(xyz)

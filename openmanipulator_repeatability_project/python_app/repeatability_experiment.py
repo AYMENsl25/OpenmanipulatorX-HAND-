@@ -94,6 +94,35 @@ class TouchRecord:
     recorded_utc: str = field(default_factory=utc_timestamp)
     manual: ManualMeasurement | None = None
     status: str = "AUTO_SAMPLED"
+    _calculated_result: "TouchCalculation | None" = field(default=None, init=False, repr=False)
+
+    def calculated_result(self) -> "TouchCalculation":
+        """Return the one cached calculation consumed by Excel, logs and plots."""
+        if self._calculated_result is None:
+            fk_actual = self.mean_physical_fk()
+            fk_std = self.fk_std()
+            actual_motors = self.mean_motor_angles()
+            actual_joints = self.mean_joint_angles()
+            motor_error = tuple(
+                (actual - planned + 180.0) % 360.0 - 180.0
+                for actual, planned in zip(
+                    actual_motors.as_tuple(), self.planned_motors.as_tuple(), strict=True
+                )
+            )
+            self._calculated_result = TouchCalculation(
+                touch_index=self.touch_index,
+                cycle=self.cycle,
+                point_name=self.point_name,
+                fk_actual=fk_actual,
+                fk_error=_vector_error(fk_actual, self.commanded_physical),
+                fk_std=fk_std,
+                fk_noise_norm=math.sqrt(fk_std.x ** 2 + fk_std.y ** 2 + fk_std.z ** 2),
+                actual_motors=actual_motors,
+                actual_joints=actual_joints,
+                mean_raw_positions=self.mean_raw_positions(),
+                motor_errors=motor_error,
+            )
+        return self._calculated_result
 
     def mean_physical_fk(self) -> XYZ:
         return XYZ(
@@ -117,7 +146,7 @@ class TouchRecord:
         )
 
     def fk_error(self) -> tuple[float, float, float, float]:
-        return _vector_error(self.mean_physical_fk(), self.commanded_physical)
+        return self.calculated_result().fk_error
 
     def mean_raw_positions(self) -> tuple[float, float, float, float]:
         return tuple(
@@ -145,6 +174,25 @@ class TouchRecord:
         if self.manual is None or self.manual.measured_xyz is None:
             return None
         return _vector_error(self.manual.measured_xyz, self.commanded_physical)
+
+
+@dataclass(frozen=True)
+class TouchCalculation:
+    touch_index: int
+    cycle: int
+    point_name: str
+    fk_actual: XYZ
+    fk_error: tuple[float, float, float, float]
+    fk_std: XYZ
+    fk_noise_norm: float
+    actual_motors: MotorAngles
+    actual_joints: JointAngles
+    mean_raw_positions: tuple[float, float, float, float]
+    motor_errors: tuple[float, float, float, float]
+
+    @property
+    def axis_label(self) -> str:
+        return f"{self.touch_index}:C{self.cycle}-{self.point_name}"
 
 
 class RepeatabilityWorkbook:
@@ -216,7 +264,7 @@ class RepeatabilityWorkbook:
         return [
             "session_id", "cycle", "point", "touch_index", "recorded_utc", "status",
             "target_x_mm", "target_y_mm", "target_z_mm",
-            "fk_mean_x_mm", "fk_mean_y_mm", "fk_mean_z_mm",
+            "fk_actual_x_mm", "fk_actual_y_mm", "fk_actual_z_mm",
             "fk_error_x_mm", "fk_error_y_mm", "fk_error_z_mm", "fk_error_norm_mm",
             "fk_std_x_mm", "fk_std_y_mm", "fk_std_z_mm", "fk_noise_norm_mm",
             "ik_id11_motor_deg", "ik_id12_motor_deg", "ik_id13_motor_deg", "ik_id14_motor_deg",
@@ -232,10 +280,7 @@ class RepeatabilityWorkbook:
         ]
 
     def _summary_row(self, record: TouchRecord) -> list:
-        mean_fk = record.mean_physical_fk()
-        std_fk = record.fk_std()
-        fk_error = record.fk_error()
-        actual_motors = record.mean_motor_angles()
+        result = record.calculated_result()
         manual_xyz = record.manual.measured_xyz if record.manual else None
         manual_error = record.manual_error()
         row = [
@@ -243,13 +288,13 @@ class RepeatabilityWorkbook:
             record.recorded_utc, record.status,
         ]
         self._append_xyz(row, record.commanded_physical)
-        self._append_xyz(row, mean_fk)
-        row.extend(fk_error)
-        self._append_xyz(row, std_fk)
-        row.extend((math.sqrt(std_fk.x ** 2 + std_fk.y ** 2 + std_fk.z ** 2),))
+        self._append_xyz(row, result.fk_actual)
+        row.extend(result.fk_error)
+        self._append_xyz(row, result.fk_std)
+        row.append(result.fk_noise_norm)
         row.extend(record.planned_motors.as_tuple())
-        row.extend(actual_motors.as_tuple())
-        row.extend(record.mean_raw_positions())
+        row.extend(result.actual_motors.as_tuple())
+        row.extend(result.mean_raw_positions)
         row.append(len(record.samples))
         self._append_xyz(row, manual_xyz)
         row.extend(manual_error if manual_error is not None else (None, None, None, None))
@@ -372,8 +417,8 @@ class RepeatabilityWorkbook:
                 records = [r for r in self.records if r.point_name == name]
                 if not records:
                     continue
-                errors = [r.fk_error()[3] for r in records]
-                positions = [r.mean_physical_fk() for r in records]
+                errors = [r.calculated_result().fk_error[3] for r in records]
+                positions = [r.calculated_result().fk_actual for r in records]
                 aggregate.append((name, fmean(errors), max(errors), *(_std(getattr(p, axis) for p in positions) for axis in ("x", "y", "z")), len(records)))
             chart = BarChart()
             chart.title = "Mean and maximum encoder FK error per point"
@@ -426,15 +471,15 @@ class RepeatabilityWorkbook:
             headers.extend((f"id{motor_id}_ik_motor_deg", f"id{motor_id}_actual_motor_deg", f"id{motor_id}_motor_error_deg", f"id{motor_id}_ik_q_deg", f"id{motor_id}_actual_q_deg", f"id{motor_id}_q_error_deg", f"id{motor_id}_raw_mean"))
         sheet.append(headers)
         for record in self.records:
+            result = record.calculated_result()
             row = [self.run.session_id, record.cycle, record.point_name, record.touch_index]
-            actual_m = record.mean_motor_angles().as_tuple()
-            actual_q = record.mean_joint_angles().as_tuple()
+            actual_m = result.actual_motors.as_tuple()
+            actual_q = result.actual_joints.as_tuple()
             for i in range(4):
                 planned_m = record.planned_motors.as_tuple()[i]
                 planned_q = record.planned_joints.as_tuple()[i]
                 # Wrapped motor display differences; calibrated q stays continuous.
-                motor_error = (actual_m[i] - planned_m + 180) % 360 - 180
-                row.extend((planned_m, actual_m[i], motor_error, planned_q, actual_q[i], actual_q[i] - planned_q, record.mean_raw_positions()[i]))
+                row.extend((planned_m, actual_m[i], result.motor_errors[i], planned_q, actual_q[i], actual_q[i] - planned_q, result.mean_raw_positions[i]))
             sheet.append(row)
         self._style_sheet(sheet)
         if self.records:
@@ -498,4 +543,5 @@ __all__ = [
     "RepeatabilityRunConfig",
     "RepeatabilityWorkbook",
     "TouchRecord",
+    "TouchCalculation",
 ]
