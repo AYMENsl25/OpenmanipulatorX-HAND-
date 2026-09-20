@@ -278,6 +278,20 @@ original FK result and every correction remain auditable. The in-memory teach
 start/end points use the same ground-safe XYZ values. This is a replay safety
 policy, not an FK calibration correction.
 
+## Experiment GUI layout
+
+Open the main `2  Point and Repeatability Experiment` tab. It contains:
+
+- `A  Point Planner and Workspace`: P01-P11 analysis, selected/all-point motion,
+  reachability results, physical/internal XYZ and the ID11-centered workspace map.
+- `B  Repeatability and Error Graphs`: point selection, repetitions, samples per
+  touch, sampling interval, motion speed, run/stop controls and live `Motor Error`,
+  `XYZ Error` and `FK Sample Noise` graphs.
+
+The graphs update after each completed touch from the same calculated result
+object written to Excel. `Pop out graphs` opens the same three plots in a larger
+window; closing that window does not remove the embedded graphs or saved results.
+
 ## Offline checks
 
 ```powershell

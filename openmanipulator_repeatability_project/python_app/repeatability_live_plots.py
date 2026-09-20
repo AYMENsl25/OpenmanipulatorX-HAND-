@@ -74,14 +74,13 @@ class LinePlot(ttk.Frame):
                     canvas.create_text(sx(i), height-bottom+5, text=label, anchor="n", angle=30)
 
 
-class RepeatabilityLivePlots:
+class RepeatabilityPlotPanel(ttk.Frame):
+    """Reusable plot notebook for both the main GUI and the pop-out window."""
+
     def __init__(self, master: tk.Misc):
-        self.window = tk.Toplevel(master)
-        self.window.title("Repeatability Live Error Plots")
-        self.window.geometry("1100x760")
-        self.window.minsize(720, 500)
-        notebook = ttk.Notebook(self.window)
-        notebook.pack(fill="both", expand=True, padx=8, pady=8)
+        super().__init__(master)
+        notebook = ttk.Notebook(self)
+        notebook.pack(fill="both", expand=True)
         warning = config.MOTOR_TRACKING_WARNING_DEGREES
         stop = config.POST_MOVE_TOLERANCE_DEGREES
         self.motor = LinePlot(notebook, "Motor Error", "error (deg)", ("ID11", "ID12", "ID13", "ID14"), (("warning", warning, "#ef6c00", (5, 3)), ("10 deg stop", stop, "#c62828", (2, 2))))
@@ -90,7 +89,6 @@ class RepeatabilityLivePlots:
         notebook.add(self.motor, text="Motor Error")
         notebook.add(self.xyz, text="XYZ Error")
         notebook.add(self.noise, text="FK Sample Noise")
-        self.window.protocol("WM_DELETE_WINDOW", self.window.withdraw)
 
     def clear(self) -> None:
         self.motor.clear(); self.xyz.clear(); self.noise.clear()
@@ -103,6 +101,23 @@ class RepeatabilityLivePlots:
             label,
             (result.fk_std.x, result.fk_std.y, result.fk_std.z, result.fk_noise_norm),
         )
+
+
+class RepeatabilityLivePlots:
+    def __init__(self, master: tk.Misc):
+        self.window = tk.Toplevel(master)
+        self.window.title("Repeatability Live Error Plots")
+        self.window.geometry("1100x760")
+        self.window.minsize(720, 500)
+        self.panel = RepeatabilityPlotPanel(self.window)
+        self.panel.pack(fill="both", expand=True, padx=8, pady=8)
+        self.window.protocol("WM_DELETE_WINDOW", self.window.withdraw)
+
+    def clear(self) -> None:
+        self.panel.clear()
+
+    def add_result(self, result: TouchCalculation) -> None:
+        self.panel.add_result(result)
         self.window.deiconify()
 
     def show(self) -> None:

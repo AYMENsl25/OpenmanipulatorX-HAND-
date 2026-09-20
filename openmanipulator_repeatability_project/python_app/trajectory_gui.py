@@ -43,7 +43,7 @@ from repeatability_experiment import (
     RepeatabilityWorkbook,
     TouchRecord,
 )
-from repeatability_live_plots import RepeatabilityLivePlots
+from repeatability_live_plots import RepeatabilityLivePlots, RepeatabilityPlotPanel
 from serial_controller import ControllerError, OpenCRController, available_ports
 from trajectory import (
     TrajectoryPoint,
@@ -122,6 +122,11 @@ class TrajectoryGUI(ttk.Frame):
         self._repeatability_workbook: RepeatabilityWorkbook | None = None
         self.repeatability_window: tk.Toplevel | None = None
         self.repeatability_plots: RepeatabilityLivePlots | None = None
+        self.repeatability_plot_panel: RepeatabilityPlotPanel | None = None
+        self.main_notebook: ttk.Notebook | None = None
+        self.experiment_notebook: ttk.Notebook | None = None
+        self.experiment_tab: ttk.Frame | None = None
+        self.repeatability_dashboard_tab: ttk.Frame | None = None
         self.output_dir = Path(__file__).resolve().parents[1]
         self.logger = ExperimentLogger(project_root=self.output_dir)
         self._experiment_plan: ExperimentPlan | None = None
@@ -172,9 +177,11 @@ class TrajectoryGUI(ttk.Frame):
         self._connection().grid(row=1, column=0, sticky="ew", pady=(0, 8))
 
         notebook = ttk.Notebook(self)
+        self.main_notebook = notebook
         notebook.grid(row=2, column=0, sticky="nsew")
         control_tab = ttk.Frame(notebook, padding=6)
         experiment_tab = ttk.Frame(notebook, padding=6)
+        self.experiment_tab = experiment_tab
         log_tab = ttk.Frame(notebook, padding=6)
         for tab in (control_tab, experiment_tab, log_tab):
             tab.rowconfigure(0, weight=1)
@@ -187,7 +194,19 @@ class TrajectoryGUI(ttk.Frame):
         upper.grid(row=0, column=0, sticky="nsew")
         upper.add(self._controls(upper), weight=3)
         upper.add(self._replay(upper), weight=2)
-        self._workspace_preview(experiment_tab).grid(row=0, column=0, sticky="nsew")
+        experiment_notebook = ttk.Notebook(experiment_tab)
+        self.experiment_notebook = experiment_notebook
+        experiment_notebook.grid(row=0, column=0, sticky="nsew")
+        planner_tab = ttk.Frame(experiment_notebook, padding=4)
+        repeatability_tab = ttk.Frame(experiment_notebook, padding=4)
+        self.repeatability_dashboard_tab = repeatability_tab
+        for tab in (planner_tab, repeatability_tab):
+            tab.rowconfigure(0, weight=1)
+            tab.columnconfigure(0, weight=1)
+        experiment_notebook.add(planner_tab, text="A  Point Planner and Workspace")
+        experiment_notebook.add(repeatability_tab, text="B  Repeatability and Error Graphs")
+        self._workspace_preview(planner_tab).grid(row=0, column=0, sticky="nsew")
+        self._repeatability_dashboard(repeatability_tab).grid(row=0, column=0, sticky="nsew")
         self._status(log_tab).grid(row=0, column=0, sticky="nsew")
         ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w").grid(row=3, column=0, sticky="ew", pady=(6, 0))
 
@@ -318,7 +337,7 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Button(action_bar, text="1. Analyze all points", command=self.analyze_experiment_points).pack(side="left", padx=(0, 4))
         ttk.Button(action_bar, text="Run selected point", command=self.run_selected_point).pack(side="left", padx=4)
         ttk.Button(action_bar, text="Run all reachable", command=self.run_all_reachable).pack(side="left", padx=4)
-        ttk.Button(action_bar, text="Repeatability setup", style="Primary.TButton", command=self._open_repeatability_window).pack(side="left", padx=4)
+        ttk.Button(action_bar, text="Repeatability + graphs", style="Primary.TButton", command=self._show_repeatability_dashboard).pack(side="left", padx=4)
         ttk.Button(action_bar, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).pack(side="left", padx=4)
         ttk.Label(action_bar, text="Experiment:").pack(side="left", padx=(12, 2))
         ttk.Label(action_bar, textvariable=self.experiment_status).pack(side="left")
@@ -354,6 +373,62 @@ class TrajectoryGUI(ttk.Frame):
         frame.columnconfigure(3, weight=1)
         self._draw_workspace()
         return frame
+
+    def _repeatability_dashboard(self, parent) -> ttk.Frame:
+        """Build the complete experiment setup and live-graph area in the main GUI."""
+        frame = ttk.Frame(parent)
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(1, weight=1)
+
+        setup = ttk.LabelFrame(frame, text="Experiment sequence", padding=8)
+        setup.grid(row=0, column=0, sticky="ew", pady=(0, 6))
+        for column in range(12):
+            setup.columnconfigure(column, weight=1)
+        ttk.Label(setup, text="Points:", font=("TkDefaultFont", 9, "bold")).grid(row=0, column=0, sticky="w")
+        for index, (name, selected) in enumerate(self.experiment_point_selected.items(), start=1):
+            ttk.Checkbutton(setup, text=name, variable=selected).grid(
+                row=0, column=index, sticky="w", padx=2
+            )
+        ttk.Button(setup, text="Select all", command=self._select_all_experiment_points).grid(row=1, column=0, sticky="ew", padx=2, pady=(6, 0))
+        ttk.Button(setup, text="Clear", command=self._clear_experiment_points).grid(row=1, column=1, sticky="ew", padx=2, pady=(6, 0))
+        ttk.Label(setup, text="Repetitions").grid(row=1, column=2, sticky="e", padx=(8, 2), pady=(6, 0))
+        ttk.Entry(setup, textvariable=self.repeatability_repetitions, width=5).grid(row=1, column=3, sticky="w", pady=(6, 0))
+        ttk.Label(setup, text="Samples/touch").grid(row=1, column=4, sticky="e", padx=(8, 2), pady=(6, 0))
+        ttk.Entry(setup, textvariable=self.repeatability_sample_count, width=5).grid(row=1, column=5, sticky="w", pady=(6, 0))
+        ttk.Label(setup, text="Interval ms").grid(row=1, column=6, sticky="e", padx=(8, 2), pady=(6, 0))
+        ttk.Entry(setup, textvariable=self.repeatability_sample_interval_ms, width=6).grid(row=1, column=7, sticky="w", pady=(6, 0))
+        ttk.Label(setup, text="Speed 0.25-1.0").grid(row=1, column=8, sticky="e", padx=(8, 2), pady=(6, 0))
+        ttk.Entry(setup, textvariable=self.repeatability_speed, width=5).grid(row=1, column=9, sticky="w", pady=(6, 0))
+        ttk.Button(setup, text="Run sequence", style="Primary.TButton", command=self.run_repeatability_sequence).grid(row=2, column=0, columnspan=4, sticky="ew", padx=2, pady=(8, 0))
+        ttk.Button(setup, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).grid(row=2, column=4, columnspan=3, sticky="ew", padx=2, pady=(8, 0))
+        ttk.Button(setup, text="Pop out graphs", command=self._show_repeatability_plots).grid(row=2, column=7, columnspan=2, sticky="ew", padx=2, pady=(8, 0))
+        ttk.Button(setup, text="Clear graphs", command=self._clear_repeatability_plots).grid(row=2, column=9, columnspan=2, sticky="ew", padx=2, pady=(8, 0))
+        ttk.Label(setup, textvariable=self.experiment_status, style="State.TLabel").grid(row=2, column=11, sticky="e", padx=(8, 0), pady=(8, 0))
+
+        plot_area = ttk.LabelFrame(frame, text="Live results - updated after every completed touch", padding=6)
+        plot_area.grid(row=1, column=0, sticky="nsew")
+        plot_area.rowconfigure(1, weight=1)
+        plot_area.columnconfigure(0, weight=1)
+        ttk.Label(
+            plot_area,
+            text="Motor tracking error, physical XYZ error and within-touch FK sample noise use the same saved result object as Excel.",
+        ).grid(row=0, column=0, sticky="w", pady=(0, 4))
+        self.repeatability_plot_panel = RepeatabilityPlotPanel(plot_area)
+        self.repeatability_plot_panel.grid(row=1, column=0, sticky="nsew")
+        return frame
+
+    def _show_repeatability_dashboard(self) -> None:
+        if self.main_notebook is not None and self.experiment_tab is not None:
+            self.main_notebook.select(self.experiment_tab)
+        if self.experiment_notebook is not None and self.repeatability_dashboard_tab is not None:
+            self.experiment_notebook.select(self.repeatability_dashboard_tab)
+
+    def _clear_repeatability_plots(self) -> None:
+        if self.repeatability_plot_panel is not None:
+            self.repeatability_plot_panel.clear()
+        if self.repeatability_plots is not None and self.repeatability_plots.exists():
+            self.repeatability_plots.clear()
+        self._log("Repeatability graphs cleared; saved Excel and telemetry files were kept")
 
     def _open_repeatability_window(self) -> None:
         if self.repeatability_window is not None and self.repeatability_window.winfo_exists():
@@ -434,16 +509,22 @@ class TrajectoryGUI(ttk.Frame):
         window.protocol("WM_DELETE_WINDOW", close_window)
 
     def _show_repeatability_plots(self, *, reset: bool = False) -> None:
+        if self.repeatability_plot_panel is not None and reset:
+            self.repeatability_plot_panel.clear()
+        if reset:
+            if self.repeatability_plots is not None and self.repeatability_plots.exists():
+                self.repeatability_plots.clear()
+            self._show_repeatability_dashboard()
+            return
         if self.repeatability_plots is None or not self.repeatability_plots.exists():
             self.repeatability_plots = RepeatabilityLivePlots(self.master)
-        elif reset:
-            self.repeatability_plots.clear()
         self.repeatability_plots.show()
 
     def _append_repeatability_plot_result(self, result) -> None:
-        if self.repeatability_plots is None or not self.repeatability_plots.exists():
-            self.repeatability_plots = RepeatabilityLivePlots(self.master)
-        self.repeatability_plots.add_result(result)
+        if self.repeatability_plot_panel is not None:
+            self.repeatability_plot_panel.add_result(result)
+        if self.repeatability_plots is not None and self.repeatability_plots.exists():
+            self.repeatability_plots.add_result(result)
 
     def _draw_workspace(self, highlight=None) -> None:
         if highlight is not None:
