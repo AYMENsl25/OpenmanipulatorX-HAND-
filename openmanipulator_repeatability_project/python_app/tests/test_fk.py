@@ -28,6 +28,18 @@ def test_named_work_pose_fk():
     assert config.FK_JOINT_LIMITS["theta4"].contains(config.WORK_JOINT_DEGREES[3])
 
 
+def test_named_scan_pose_is_centered_and_within_limits():
+    xyz = forward_kinematics_from_joints(JointAngles(*config.SCAN_JOINT_DEGREES))
+    assert math.dist((xyz.x, xyz.y, xyz.z), config.SCAN_XYZ_MM) < 0.01
+    assert abs(xyz.y) < 0.01
+    for name, value in zip(
+        ("theta1", "theta2", "theta3", "theta4"),
+        config.SCAN_JOINT_DEGREES,
+        strict=True,
+    ):
+        assert config.FK_JOINT_LIMITS[name].contains(value)
+
+
 def test_base_offset_rotates_with_joint1():
     xyz = forward_kinematics_from_joints(JointAngles(90.0, 0.0, 0.0, 0.0))
     assert abs(xyz.x) < 0.01

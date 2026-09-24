@@ -1,5 +1,23 @@
 # OpenMANIPULATOR-X calibrated IK/FK, teach and replay
 
+## Camera payload repeatability profile
+
+For the new supervised camera-guided one/two-cube experiment, see
+[`PICK_PLACE_EXPERIMENT.md`](../PICK_PLACE_EXPERIMENT.md). It requires the
+updated OpenCR sketch with `GRIPPER_RAW_V2`, measured ID15 RAW endpoints and
+current cutoff, and operator-entered pick/place/travel TCP Z; camera
+calibration supplies X/Y only. The experiment has not been hardware-tested.
+
+When the wrist camera is installed, enable **Camera payload** and press **Apply camera settings** before starting a repeatability run. The profile limits motion speed to `0.50`, requires at least `10` samples per touch at `100 ms`, waits `0.75 s` after ordinary phases, and dwells `1.00 s` at touch. It changes the diagnostic motor-warning line to `2.0 deg`; the firmware/Python hard stop remains `10.0 deg`.
+
+The payload profile itself improves settling and makes payload-related deflection easier to measure without changing FK, IK, calibration, or commanded experiment points. A consistent XYZ offset is therefore preserved as evidence rather than hidden by an unverified mathematical compensation. The separate SCAN-pose section below documents its measured limit expansion.
+
+## Centered camera scan pose
+
+The former straight REST button is replaced in the GUI by **SCAN (camera)**. The scan command automatically selects the conservative `0.50` motion scale and uses motor targets `(168.486, 159.829, 330.074, 124.570) deg`, corresponding to calibrated joints approximately `(0.000, -19.995, -25.796, 124.570) deg` and finger-center FK approximately `(108.13, 0.00, 138.21) mm`. ID11 is deliberately centered at calibrated `q1=0`; the other targets average the six supplied camera-loaded readings.
+
+The calibrated zero/reference pose remains internal to the kinematic conversion and is not redefined. To admit the measured scan pose, direct-motion q2 is expanded from `-15..85` to `-25..85 deg`, and q4 from `-45..100` to `-45..130 deg`, identically in Python and OpenCR. The Cartesian IK solver retains its already validated `q2=-15..85` and `q4=-45..100 deg` envelope, preventing the new scan pose from silently changing P01-P11 solution branches. All other limits are unchanged.
+
 This project uses the calibration measured on the remounted robot. The straight,
 raised REST encoder readings define mathematical `q1=q2=q3=q4=0`:
 
@@ -134,28 +152,31 @@ the app reads the robot again. Error above 5 mm is recorded as a warning; error
 above 10 mm is a hard stop. After every completed selected or full-run point,
 the robot returns to the calibrated WORK pose before proceeding.
 
-## REST and WORK test
+## SCAN and WORK test
 
-1. Put the robot close to the straight raised REST pose manually.
+1. Attach the camera, clear the full workspace, and put the robot reasonably close to the measured SCAN pose.
 2. Press **TORQUE ON**. The firmware first copies the current positions into
    the goal registers, then enables torque, so it holds without jumping toward
    an old goal.
-3. Press **REST (STRAIGHT)** and accept the movement confirmation.
-4. Press **CAPTURE + SAVE MANUAL POSE** and confirm q is near zero. The working
-   finger-center TCP is near `(318.7,0,204.5) mm`; the official gripper frame is
-   `(286,0,204.5) mm`.
+3. Press **SCAN (camera)** and accept the movement confirmation.
+4. Press **CAPTURE + SAVE MANUAL POSE** and confirm q is near
+   `(0.0,-19.995,-25.796,124.570) deg`. The calculated finger-center TCP is
+   near `(108.1,0.0,138.2) mm` before measured payload deflection.
 5. Clear the table, support the arm, press **WORK (DOWN)**, and confirm the
    captured pose is near q=`(0,0,0,82.881) deg` and working-tip
    XYZ=`(179.7,0,47.0) mm`.
 
-REST, WORK and every commanded target are checked against these provisional limits:
+SCAN, WORK and direct motor targets are checked against these motion limits:
 
 ```text
 q1: -110 to +110 deg (authorized P01/P07 experiment range)
-q2: -15 to  +85 deg
+q2: -25 to  +85 deg
 q3: -60 to  +90 deg
-q4: -45 to +100 deg
+q4: -45 to +130 deg
 ```
+
+Cartesian IK remains restricted to q2 `-15..85 deg` and q4 `-45..100 deg` so
+the established experiment-point solutions are unchanged.
 
 ## Teach and trajectory test
 
@@ -189,6 +210,16 @@ The tested internal FK/IK equations are unchanged. The configurable transform
 maps physical `(X,Y,Z)` to internal `(X,-Y,Z)`. PREVIEW displays both values
 before motion. The frame, transform, soft limits, ground plane, and P01-P11 are
 defined once in `config/experiment_config.json`.
+
+The **manual single-XYZ entry** in the current GUI now accepts X measured from
+the **rear face of ID11**. It uses a separate, provisional 25 mm rear-to-axis
+conversion (`X_axis = X_rear - 25 mm`) and previews both values before the
+operator confirms motion. Its displayed hand X is rear-referenced. The old
+P01-P11 experiments, teaching/trajectory replay, saved workbook coordinate
+frame, and FK/IK itself remain ID11-axis-centred; loading an old named point
+into the manual XYZ entry converts only its displayed X. Do not mix rear and
+axis readings in a log without the frame label. The 25 mm is inferred from an
+approximately 50 mm housing and still needs a ruler check at the ID11 axis.
 
 The configurable soft Cartesian envelope is:
 

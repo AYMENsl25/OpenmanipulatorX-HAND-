@@ -102,6 +102,10 @@ class RepeatabilityExperimentTests(unittest.TestCase):
                 sample_count=2,
                 sample_interval_ms=50,
                 pause_for_manual_measurement=True,
+                camera_payload_mode=True,
+                motor_tracking_warning_deg=2.0,
+                settle_seconds=0.75,
+                touch_dwell_seconds=1.0,
             )
             writer = RepeatabilityWorkbook(
                 Path(__file__).resolve().parents[2], run, output_path=output_path
@@ -144,6 +148,14 @@ class RepeatabilityExperimentTests(unittest.TestCase):
                 row = [cell.value for cell in summary[2]]
                 self.assertEqual(row[headers.index("point")], "P09")
                 self.assertAlmostEqual(row[headers.index("target_x_mm")], 230.0)
+                run_config = workbook["Run Config"]
+                saved_config = {
+                    row[0].value: row[1].value for row in run_config.iter_rows(min_row=2)
+                }
+                self.assertTrue(saved_config["camera_payload_mode"])
+                self.assertAlmostEqual(saved_config["motor_tracking_warning_deg"], 2.0)
+                self.assertAlmostEqual(saved_config["settle_seconds"], 0.75)
+                self.assertAlmostEqual(saved_config["touch_dwell_seconds"], 1.0)
                 self.assertAlmostEqual(row[headers.index("fk_actual_x_mm")], 230.05)
                 self.assertNotIn("fk_mean_x_mm", headers)
                 self.assertFalse(any(h.startswith("manual_") for h in headers))

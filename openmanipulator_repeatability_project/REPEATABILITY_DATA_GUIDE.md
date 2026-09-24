@@ -1,5 +1,11 @@
 # Automatic repeatability collection
 
+## Runs with the wrist camera
+
+Use the GUI's **Camera payload** profile and record it in the workbook `Run Config` sheet. The current profile is speed `<= 0.50`, at least `10` touch samples, at least `100 ms` between samples, `0.75 s` settling, and `1.00 s` touch dwell. The orange `2.0 deg` line is a payload-aware warning for investigation. The red `10.0 deg` line remains the hard stop and is not loosened.
+
+Interpret low within-touch FK noise together with a repeatable signed XYZ offset as systematic payload deflection or calibration/TCP bias, not random encoder noise. Do not subtract that bias from FK/IK until it has been checked against an independent physical measurement method.
+
 Upload `opencr_firmware/OpenManipulatorXYZController/OpenManipulatorXYZController.ino` from this project to OpenCR. This version supports SET_SPEED. Close Arduino Serial Monitor before connecting the GUI.
 
 Launch from the lab workspace:

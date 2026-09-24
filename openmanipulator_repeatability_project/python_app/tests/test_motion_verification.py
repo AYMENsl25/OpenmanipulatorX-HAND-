@@ -54,7 +54,7 @@ class MotionVerificationTests(unittest.TestCase):
     def test_firmware_joint_limits_match_python_before_motion(self):
         controller = OpenCRController()
         controller._command = lambda message: (
-            "JOINT_LIMITS,-110,110,-15,85,-60,90,-45,100,RAW_TOLERANCE,0.045"
+            "JOINT_LIMITS,-110,110,-25,85,-60,90,-45,130,RAW_TOLERANCE,0.045"
             if message == "JOINT_LIMITS"
             else ""
         )
@@ -63,7 +63,7 @@ class MotionVerificationTests(unittest.TestCase):
     def test_firmware_joint_limit_mismatch_is_rejected(self):
         controller = OpenCRController()
         controller._command = lambda _message: (
-            "JOINT_LIMITS,-90,100,-15,85,-60,90,-45,100,RAW_TOLERANCE,0.045"
+            "JOINT_LIMITS,-90,100,-25,85,-60,90,-45,130,RAW_TOLERANCE,0.045"
         )
         with self.assertRaisesRegex(ControllerError, r"q1: OpenCR=-90\.0\.\.100\.0"):
             controller.verify_firmware_joint_limits()
@@ -81,7 +81,7 @@ class MotionVerificationTests(unittest.TestCase):
     def test_older_limit_protocol_without_raw_tolerance_is_rejected(self):
         controller = OpenCRController()
         controller._command = lambda _message: (
-            "JOINT_LIMITS,-110,110,-15,85,-60,90,-45,100"
+            "JOINT_LIMITS,-110,110,-25,85,-60,90,-45,130"
         )
         with self.assertRaisesRegex(ControllerError, "protocol is outdated"):
             controller.read_firmware_joint_limits()
