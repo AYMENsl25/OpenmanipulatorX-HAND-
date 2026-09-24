@@ -1,0 +1,20 @@
+{
+  "image_width": 640,
+  "image_height": 480,
+  "reference_frame": "ID11_REAR_FACE_ESTIMATED",
+  "physical_references_xy_mm": {
+    "P1": [131, 130],
+    "P2": [295, 130],
+    "P3": [131, -92],
+    "P4": [295, -92],
+    "P5": [295, 0],
+    "P6": [180, 78],
+    "P7": [260, 78],
+    "P8": [180, -50],
+    "P9": [260, -50]
+  },
+  "edge_margin_px": 0,
+  "physical_bounds_padding_mm": 10,
+  "threshold": 46,
+  "note": "Physical reference coordinates only; click actual pixels separately for each fixed pose. The 10 mm bounds padding is for observation, not robot reachability. Full camera frame is the scan ROI; clipped objects remain EDGE_RESCAN."
+}

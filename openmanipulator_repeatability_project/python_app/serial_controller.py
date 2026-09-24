@@ -6,7 +6,7 @@ import time
 import math
 from dataclasses import dataclass
 from datetime import datetime, timezone
-from threading import Event, RLock
+from threading import Event, RLock, get_ident
 
 import serial
 from serial.tools import list_ports
@@ -87,6 +87,13 @@ class TelemetrySnapshot:
     motors: tuple[MotorTelemetry, MotorTelemetry, MotorTelemetry, MotorTelemetry]
 
 
+@dataclass(frozen=True)
+class GripperMoveResult:
+    outcome: str
+    position_raw: int
+    current_raw: int
+
+
 def available_ports() -> list[str]:
     return [port.device for port in list_ports.comports()]
 
@@ -97,7 +104,24 @@ class OpenCRController:
         # One request/response transaction owns the serial stream at a time.
         # The lock is re-entrant because move verification performs READ_ANGLES.
         self._io_lock = RLock()
+        self._exclusive_motion_owner: int | None = None
         self.status = ControllerStatus()
+
+    def begin_exclusive_motion(self) -> None:
+        with self._io_lock:
+            if self._exclusive_motion_owner is not None:
+                raise ControllerError("Another exclusive robot motion is active")
+            self._exclusive_motion_owner = get_ident()
+
+    def end_exclusive_motion(self) -> None:
+        with self._io_lock:
+            if self._exclusive_motion_owner == get_ident():
+                self._exclusive_motion_owner = None
+
+    def _assert_motion_owner(self) -> None:
+        if (self._exclusive_motion_owner is not None and
+                self._exclusive_motion_owner != get_ident()):
+            raise ControllerError("Pick/place owns robot motion; use STOP and wait first")
 
     def connect(self, port: str) -> None:
         if self._serial and self._serial.is_open:
@@ -250,6 +274,58 @@ class OpenCRController:
                 f"OpenCR firmware does not advertise TELEMETRY_V1. Received: {response}"
             )
 
+    def require_gripper_capability(self) -> None:
+        response = self._command("CAPABILITIES")
+        if "GRIPPER_RAW_V2" not in response.split(",")[1:]:
+            raise ControllerError(
+                "This OpenCR does not advertise GRIPPER_RAW_V2 (the measured "
+                "1400-to-2650 RAW gripper range). Upload the updated "
+                "OpenManipulatorXYZController.ino, reconnect, and check ID15 "
+                f"power/bus if V2 is still absent. OpenCR reported: {response}"
+            )
+
+    def read_gripper_raw(self) -> int:
+        self.require_gripper_capability()
+        response = self._command("GRIPPER_READ")
+        parts = response.split(",")
+        if len(parts) != 3 or parts[:2] != ["GRIPPER", "RAW"]:
+            raise ControllerError(f"Malformed ID15 position response: {response}")
+        try:
+            return int(parts[2])
+        except ValueError as exc:
+            raise ControllerError(f"Malformed ID15 raw position: {response}") from exc
+
+    def configure_gripper(self, open_raw: int, close_raw: int) -> None:
+        self.require_gripper_capability()
+        if not 1250 <= open_raw <= 2200 or not 2000 <= close_raw <= 2700 or not 0 < close_raw - open_raw <= 1500:
+            raise ValueError("ID15 open target must be 1250–2200 RAW and grasp target 2000–2700 RAW, at most 1500 apart")
+        try:
+            response = self._command(f"GRIPPER_CONFIG,{open_raw},{close_raw}")
+        except ControllerError as exc:
+            raise ControllerError(
+                f"OpenCR rejected ID15 open={open_raw}, grasp={close_raw} RAW: {exc}. "
+                "Verify the updated GRIPPER_RAW_V2 firmware is uploaded."
+            ) from exc
+        if response != "OK,GRIPPER_CONFIG":
+            raise ControllerError(f"ID15 configuration rejected: {response}")
+
+    def move_gripper(self, target_raw: int, max_current_raw: int) -> GripperMoveResult:
+        self._assert_motion_owner()
+        if not self.status.torque_on:
+            raise ControllerError("Cannot move ID15: torque is OFF")
+        if not 1 <= max_current_raw <= 200:
+            raise ValueError("ID15 current limit must be 1..200 raw units")
+        with self._io_lock:
+            response = self._command(
+                f"GRIPPER_MOVE,{target_raw},{max_current_raw}", timeout=12.0)
+        parts = response.split(",")
+        if len(parts) != 4 or parts[0] != "GRIPPER" or parts[1] not in ("DONE", "CONTACT"):
+            raise ControllerError(f"ID15 movement failed: {response}")
+        try:
+            return GripperMoveResult(parts[1], int(parts[2]), int(parts[3]))
+        except ValueError as exc:
+            raise ControllerError(f"Malformed ID15 movement response: {response}") from exc
+
     def torque_on(self) -> None:
         response = self._command("TORQUE_ON")
         if response != "TORQUE:ON":
@@ -376,6 +452,7 @@ class OpenCRController:
         )
 
     def move_motor_angles(self, motors: MotorAngles) -> None:
+        self._assert_motion_owner()
         with self._io_lock:
             if not self.status.torque_on:
                 raise ControllerError("Cannot move: Torque is OFF")
@@ -390,6 +467,7 @@ class OpenCRController:
             self._verify_motor_targets(motors)
 
     def set_motion_speed(self, scale: float) -> None:
+        self._assert_motion_owner()
         if not math.isfinite(scale) or not 0.25 <= scale <= 1.0:
             raise ValueError("Motion speed scale must be between 0.25 and 1.0")
         response = self._command(f"SET_SPEED,{scale:.3f}")
@@ -414,6 +492,7 @@ class OpenCRController:
         )
 
     def _move_named_pose(self, command: str, target: MotorAngles, label: str) -> None:
+        self._assert_motion_owner()
         with self._io_lock:
             if not self.status.torque_on:
                 raise ControllerError("Cannot move: Torque is OFF")
@@ -432,6 +511,14 @@ class OpenCRController:
             config.HOME_ID13,
             config.HOME_ID14,
         ), "REST")
+
+    def move_scan(self) -> None:
+        # The camera-loaded pose is always approached conservatively, even if
+        # a previous experiment restored the general motion scale to 1.0.
+        self.set_motion_speed(config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE)
+        self._move_named_pose(
+            "SCAN", MotorAngles(*config.SCAN_MOTOR_DEGREES), "SCAN"
+        )
 
     def move_work(self) -> None:
         self._move_named_pose("WORK", MotorAngles(*config.WORK_MOTOR_DEGREES), "WORK")
@@ -485,6 +572,7 @@ class OpenCRController:
         self.move_motor_angles(result.motor_angles)
 
     def send_xyz_trajectory(self, points: list[tuple[float, float, float, float]]) -> None:
+        self._assert_motion_owner()
         if not self.status.torque_on:
             raise ControllerError("Cannot play: Torque is OFF")
         port = self._require_serial()

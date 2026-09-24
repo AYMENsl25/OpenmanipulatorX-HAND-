@@ -17,10 +17,13 @@ with EXPERIMENT_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
     EXPERIMENT_CONFIG = json.load(config_file)
 
 PHYSICAL_FRAME = EXPERIMENT_CONFIG["physical_frame"]
+OPERATOR_REAR_FRAME = EXPERIMENT_CONFIG["operator_rear_frame"]
+REAR_TO_AXIS_X_MM = float(OPERATOR_REAR_FRAME["rear_to_axis_x_mm"])
 PHYSICAL_TO_INTERNAL = EXPERIMENT_CONFIG["physical_to_internal"]
 SOFT_WORKSPACE = EXPERIMENT_CONFIG["soft_workspace"]
 POINT_EXPERIMENT = EXPERIMENT_CONFIG["point_experiment"]
 REPEATABILITY_EXPERIMENT = EXPERIMENT_CONFIG["repeatability_experiment"]
+CAMERA_PAYLOAD_PROFILE = REPEATABILITY_EXPERIMENT["camera_payload_profile"]
 EXPERIMENT_POINTS = tuple(EXPERIMENT_CONFIG["experiment_points"])
 GROUND_Z_MM = float(PHYSICAL_FRAME["ground_z_mm"])
 APPROACH_CLEARANCE_MM = float(POINT_EXPERIMENT["approach_clearance_mm"])
@@ -41,6 +44,17 @@ TOUCH_SAMPLE_INTERVAL_SECONDS = (
 )
 PAUSE_FOR_MANUAL_MEASUREMENT = bool(
     REPEATABILITY_EXPERIMENT["pause_for_manual_measurement"]
+)
+CAMERA_PAYLOAD_ENABLED_DEFAULT = bool(CAMERA_PAYLOAD_PROFILE["enabled_by_default"])
+CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE = float(CAMERA_PAYLOAD_PROFILE["maximum_speed_scale"])
+CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES = int(CAMERA_PAYLOAD_PROFILE["minimum_touch_samples"])
+CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS = int(
+    CAMERA_PAYLOAD_PROFILE["minimum_sample_interval_ms"]
+)
+CAMERA_PAYLOAD_SETTLE_SECONDS = float(CAMERA_PAYLOAD_PROFILE["settle_seconds"])
+CAMERA_PAYLOAD_TOUCH_DWELL_SECONDS = float(CAMERA_PAYLOAD_PROFILE["touch_dwell_seconds"])
+CAMERA_PAYLOAD_MOTOR_TRACKING_WARNING_DEGREES = float(
+    CAMERA_PAYLOAD_PROFILE["motor_tracking_warning_deg"]
 )
 
 Z_BASE = 17.0
@@ -89,6 +103,23 @@ REST_JOINT_DEGREES = (0.0, 0.0, 0.0, 0.0)
 # working-tip TCP are both retained explicitly.
 REST_OFFICIAL_XYZ_MM = (286.0, 0.0, 204.5)
 REST_XYZ_MM = (318.7, 0.0, 204.5)
+
+# Camera SCAN pose measured with the installed payload. ID12-ID14 are the
+# average of six stable readings supplied on 2026-09-21. ID11 is deliberately
+# set to the calibrated q1=0 center so the scan plane is centered at Y=0.
+SCAN_MOTOR_DEGREES = (
+    REST_ID11,
+    159.829,
+    330.0735,
+    124.57033333333334,
+)
+SCAN_JOINT_DEGREES = (
+    0.0,
+    SCAN_MOTOR_DEGREES[1] - REST_ID12,
+    SCAN_MOTOR_DEGREES[2] - REST_ID13,
+    SCAN_MOTOR_DEGREES[3] - REST_ID14,
+)
+SCAN_XYZ_MM = (108.12825286280928, 0.0, 138.2068472595612)
 
 # Downward working pose captured previously. ID14 RAW 943 is 82.880859 deg,
 # which is also calibrated q4 because REST ID14 RAW is zero.
@@ -142,6 +173,19 @@ MEASURED_XYZ_LIMITS = {
 FK_JOINT_LIMITS = {
     # Expanded for measured P01/P07 coverage. Their required base angles are
     # approximately -103.57/+103.57 deg; +/-110 leaves controlled margin.
+    "theta1": JointLimit(-110.0, 110.0),
+    # Expanded only far enough to contain the measured camera SCAN pose
+    # q2=-19.995 deg, with approximately five degrees of controlled margin.
+    "theta2": JointLimit(-25.0, 85.0),
+    "theta3": JointLimit(-60.0, 90.0),
+    # SCAN uses q4=124.570 deg; 130 deg leaves measured operating margin.
+    "theta4": JointLimit(-45.0, 130.0),
+}
+
+# Keep the validated Cartesian experiment solver on its established branches.
+# The wider FK/motion limits above are used only to admit measured direct motor
+# poses such as SCAN; they must not silently change P01-P11 IK solutions.
+IK_SOLVER_JOINT_LIMITS = {
     "theta1": JointLimit(-110.0, 110.0),
     "theta2": JointLimit(-15.0, 85.0),
     "theta3": JointLimit(-60.0, 90.0),

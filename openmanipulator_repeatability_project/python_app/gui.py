@@ -66,7 +66,7 @@ class OpenManipulatorGUI(ttk.Frame):
         ttk.Button(frame, text="TORQUE ON", command=self.on_torque_on).grid(row=0, column=0, padx=3, pady=3)
         ttk.Button(frame, text="TORQUE OFF", command=self.on_torque_off).grid(row=0, column=1, padx=3, pady=3)
         ttk.Label(frame, textvariable=self.torque_var).grid(row=1, column=0, columnspan=2, sticky="w", pady=8)
-        ttk.Button(frame, text="REST (STRAIGHT)", command=self.on_rest).grid(row=2, column=0, sticky="ew")
+        ttk.Button(frame, text="SCAN (CAMERA)", command=self.on_scan).grid(row=2, column=0, sticky="ew")
         ttk.Button(frame, text="WORK (DOWN)", command=self.on_work).grid(row=2, column=1, sticky="ew")
         return frame
 
@@ -76,7 +76,7 @@ class OpenManipulatorGUI(ttk.Frame):
         for row, motor_id in enumerate((11, 12, 13, 14), start=1):
             ttk.Label(frame, text=f"ID{motor_id}:").grid(row=row, column=0, sticky="w")
             ttk.Label(frame, textvariable=self.angle_vars[motor_id]).grid(row=row, column=1, sticky="w")
-        ttk.Label(frame, text="ID14: REST encoder/q4=0 deg; WORK encoder/q4 about 82.881 deg").grid(
+        ttk.Label(frame, text="ID14: SCAN q4 about 124.570 deg; WORK q4 about 82.881 deg").grid(
             row=5, column=0, columnspan=2, sticky="w", pady=(8, 0)
         )
         ttk.Label(frame, text="FK theta4:").grid(row=6, column=0, sticky="w")
@@ -230,18 +230,21 @@ class OpenManipulatorGUI(ttk.Frame):
         except (ControllerError, KinematicsError) as exc:
             self._handle_error(exc)
 
-    def on_rest(self) -> None:
+    def on_scan(self) -> None:
         try:
             if not self.controller.status.torque_on:
                 raise ControllerError("Cannot move: Torque is OFF")
-            self._log("Moving to REST...")
-            self.controller.move_rest()
+            self._log("Moving to SCAN...")
+            self.controller.move_scan()
             self._log(
-                "REST reached: official frame=(286,0,204.5), finger-center TCP="
-                f"({config.REST_XYZ_MM[0]:.1f},0,{config.REST_XYZ_MM[2]:.1f}) mm"
+                "SCAN reached: finger-center TCP="
+                f"({config.SCAN_XYZ_MM[0]:.1f},0,{config.SCAN_XYZ_MM[2]:.1f}) mm"
             )
         except ControllerError as exc:
             self._handle_error(exc)
+
+    def on_rest(self) -> None:
+        self.on_scan()
 
     def on_work(self) -> None:
         try:

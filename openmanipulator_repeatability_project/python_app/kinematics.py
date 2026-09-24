@@ -43,6 +43,15 @@ class XYZ:
 
 
 @dataclass(frozen=True)
+class GripperPose:
+    """Robot base to official gripper frame, in the right-handed internal frame."""
+    position: XYZ
+    rotation: tuple[tuple[float, float, float],
+                    tuple[float, float, float],
+                    tuple[float, float, float]]
+
+
+@dataclass(frozen=True)
 class IKResult:
     joint_angles: JointAngles
     motor_angles: MotorAngles
@@ -147,6 +156,26 @@ def forward_kinematics_official_from_joints(joints: JointAngles) -> XYZ:
     return _forward_kinematics_with_tool_length(joints, config.ROBOTIS_GRIPPER_FRAME_LENGTH)
 
 
+def forward_kinematics_official_pose_from_joints(joints: JointAngles) -> GripperPose:
+    """Expose the tool orientation already defined by this FK's yaw and pitch.
+
+    The local X axis follows the last link. With no wrist roll joint, the
+    remaining axes use zero roll. This frame convention must be used unchanged
+    when collecting gripper poses for hand-eye calibration.
+    """
+    position = forward_kinematics_official_from_joints(joints)
+    yaw = math.radians(joints.theta1)
+    tool_pitch = -math.radians(joints.theta2 + joints.theta3 + joints.theta4)
+    cy, sy = math.cos(yaw), math.sin(yaw)
+    cp, sp = math.cos(tool_pitch), math.sin(tool_pitch)
+    rotation = (
+        (cy * cp, -sy, -cy * sp),
+        (sy * cp, cy, -sy * sp),
+        (sp, 0.0, cp),
+    )
+    return GripperPose(position, rotation)
+
+
 def forward_kinematics(motors: MotorAngles) -> XYZ:
     return forward_kinematics_from_joints(motor_to_fk_angles(motors))
 
@@ -155,12 +184,13 @@ def forward_kinematics_official(motors: MotorAngles) -> XYZ:
     return forward_kinematics_official_from_joints(motor_to_fk_angles(motors))
 
 
-def _joint_limits_ok(joints: JointAngles) -> bool:
+def _joint_limits_ok(joints: JointAngles, limits=None) -> bool:
+    limits = config.FK_JOINT_LIMITS if limits is None else limits
     return (
-        config.FK_JOINT_LIMITS["theta1"].contains(joints.theta1)
-        and config.FK_JOINT_LIMITS["theta2"].contains(joints.theta2)
-        and config.FK_JOINT_LIMITS["theta3"].contains(joints.theta3)
-        and config.FK_JOINT_LIMITS["theta4"].contains(joints.theta4)
+        limits["theta1"].contains(joints.theta1)
+        and limits["theta2"].contains(joints.theta2)
+        and limits["theta3"].contains(joints.theta3)
+        and limits["theta4"].contains(joints.theta4)
     )
 
 
@@ -214,8 +244,8 @@ def _candidate_joints_for_target(
             t4_candidates.append(preset)
 
     # Add dense sweep across theta4 joint limits in 5-degree increments
-    t4_min = int(math.floor(config.FK_JOINT_LIMITS["theta4"].minimum))
-    t4_max = int(math.ceil(config.FK_JOINT_LIMITS["theta4"].maximum))
+    t4_min = int(math.floor(config.IK_SOLVER_JOINT_LIMITS["theta4"].minimum))
+    t4_max = int(math.ceil(config.IK_SOLVER_JOINT_LIMITS["theta4"].maximum))
     for deg in range(t4_min, t4_max + 1, 5):
         val = float(deg)
         if not any(abs(val - existing) < 1e-3 for existing in t4_candidates):
@@ -278,7 +308,7 @@ def inverse_kinematics(
 
     valid: list[IKResult] = []
     for joints in candidates:
-        if not _joint_limits_ok(joints):
+        if not _joint_limits_ok(joints, config.IK_SOLVER_JOINT_LIMITS):
             continue
         motors = fk_to_motor_angles(joints)
         try:
@@ -322,6 +352,6 @@ def inverse_kinematics(
 def validate_ik_solution(result: IKResult) -> None:
     if result.position_error > config.IK_POSITION_TOLERANCE_MM:
         raise KinematicsError("IK solution exceeds FK validation tolerance")
-    if not _joint_limits_ok(result.joint_angles):
+    if not _joint_limits_ok(result.joint_angles, config.IK_SOLVER_JOINT_LIMITS):
         raise KinematicsError("IK solution violates joint limits")
     validate_motor_angles(result.motor_angles)

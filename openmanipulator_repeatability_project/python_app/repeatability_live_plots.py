@@ -93,6 +93,13 @@ class RepeatabilityPlotPanel(ttk.Frame):
     def clear(self) -> None:
         self.motor.clear(); self.xyz.clear(); self.noise.clear()
 
+    def set_motor_warning_threshold(self, warning_deg: float) -> None:
+        self.motor.thresholds = (
+            ("warning", warning_deg, "#ef6c00", (5, 3)),
+            ("10 deg stop", config.POST_MOVE_TOLERANCE_DEGREES, "#c62828", (2, 2)),
+        )
+        self.motor.redraw()
+
     def add_result(self, result: TouchCalculation) -> None:
         label = result.axis_label
         self.motor.append(label, result.motor_errors)
@@ -115,6 +122,9 @@ class RepeatabilityLivePlots:
 
     def clear(self) -> None:
         self.panel.clear()
+
+    def set_motor_warning_threshold(self, warning_deg: float) -> None:
+        self.panel.set_motor_warning_threshold(warning_deg)
 
     def add_result(self, result: TouchCalculation) -> None:
         self.panel.add_result(result)

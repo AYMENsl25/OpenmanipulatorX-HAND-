@@ -1,5 +1,7 @@
 #include <Dynamixel2Arduino.h>
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 // OpenMANIPULATOR-X OpenCR motor bridge.
 // Kinematics live in Python. This firmware handles DYNAMIXEL IO, torque,
@@ -22,6 +24,17 @@ static const float JOINT_LIMIT_RAW_TOLERANCE_DEG =
 
 static const uint8_t MOTOR_IDS[] = {11, 12, 13, 14};
 static const size_t MOTOR_COUNT = sizeof(MOTOR_IDS) / sizeof(MOTOR_IDS[0]);
+static const uint8_t GRIPPER_ID = 15;
+static const int32_t GRIPPER_ARRIVAL_COUNTS = 10;
+static const int32_t GRIPPER_OPEN_BAND_MIN_RAW = 1250;
+static const int32_t GRIPPER_OPEN_BAND_MAX_RAW = 2200;
+static const int32_t GRIPPER_MAX_TRAVEL_RAW = 1500;
+static const uint32_t GRIPPER_TIMEOUT_MS = 10000;
+bool gripperAvailable = false;
+bool gripperConfigured = false;
+bool gripperTorqueEnabled = false;
+int32_t gripperOpenRaw = 0;
+int32_t gripperCloseRaw = 0;
 
 // Straight raised REST / calibration zero: RAW {1917,2046,4049,0}
 // means q1=q2=q3=q4=0. HOME remains a compatibility alias for REST.
@@ -40,11 +53,19 @@ static const float WORK_ANGLES[] = {
   355.869140625f,
   82.880859375f
 };
+// Camera SCAN pose: ID12-ID14 average six stable measured readings; ID11 is
+// held at calibrated q1=0 so the camera is centered on physical Y=0.
+static const float SCAN_ANGLES[] = {
+  168.486328125f,
+  159.829000000f,
+  330.073500000f,
+  124.570333333f
+};
 static const float JOINT_DIRECTION[] = {+1.0f, +1.0f, +1.0f, +1.0f};
 // ID11/q1 expanded for P01/P07: required angles are approximately
 // -103.57/+103.57 deg. The other calibrated joint limits remain unchanged.
-static const float JOINT_MIN_DEG[] = {-110.0f, -15.0f, -60.0f, -45.0f};
-static const float JOINT_MAX_DEG[] = {110.0f, 85.0f, 90.0f, 100.0f};
+static const float JOINT_MIN_DEG[] = {-110.0f, -25.0f, -60.0f, -45.0f};
+static const float JOINT_MAX_DEG[] = {110.0f, 85.0f, 90.0f, 130.0f};
 
 static const float Z0 = 76.5f;
 static const float BASE_X = 12.0f;
@@ -288,6 +309,15 @@ bool torqueOffAll()
     }
   }
   torqueEnabled = false;
+  if (gripperAvailable && gripperTorqueEnabled)
+  {
+    if (!dxl.torqueOff(GRIPPER_ID))
+    {
+      printBusError("TORQUE_OFF", GRIPPER_ID);
+      ok = false;
+    }
+    gripperTorqueEnabled = false;
+  }
   return ok;
 }
 
@@ -323,6 +353,12 @@ bool stopMotionIfRequested()
       if (stop)
       {
         synchronizeGoalsToPresent();
+        if (gripperAvailable && gripperTorqueEnabled)
+        {
+          int32_t gripperRaw = 0;
+          if (readRawPosition(GRIPPER_ID, gripperRaw))
+            setGoalRaw(GRIPPER_ID, gripperRaw);
+        }
         Serial.println("STOPPED");
         return true;
       }
@@ -364,6 +400,109 @@ bool configureMotor(uint8_t id)
   // Add integral gain to overcome steady-state gravity sag
   dxl.writeControlTableItem(ControlTableItem::POSITION_I_GAIN, id, 100);
   return true;
+}
+
+bool configureGripperMotor()
+{
+  if (!dxl.torqueOff(GRIPPER_ID))
+  {
+    printBusError("TORQUE_OFF", GRIPPER_ID);
+    return false;
+  }
+  if (!dxl.setOperatingMode(GRIPPER_ID, OP_EXTENDED_POSITION))
+  {
+    printBusError("OPERATING_MODE", GRIPPER_ID);
+    return false;
+  }
+  // Do not inherit the arm's gravity-compensation integral gain.
+  if (!dxl.writeControlTableItem(ControlTableItem::PROFILE_VELOCITY, GRIPPER_ID, 20) ||
+      !dxl.writeControlTableItem(ControlTableItem::PROFILE_ACCELERATION, GRIPPER_ID, 10))
+  {
+    printBusError("GRIPPER_PROFILE", GRIPPER_ID);
+    return false;
+  }
+  return true;
+}
+
+bool holdGripper()
+{
+  int32_t raw = 0;
+  return readRawPosition(GRIPPER_ID, raw) && setGoalRaw(GRIPPER_ID, raw);
+}
+
+bool ensureGripperTorque()
+{
+  if (gripperTorqueEnabled) return true;
+  if (!holdGripper()) return false;
+  if (!dxl.torqueOn(GRIPPER_ID))
+  {
+    printBusError("TORQUE_ON", GRIPPER_ID);
+    return false;
+  }
+  gripperTorqueEnabled = true;
+  return true;
+}
+
+void moveGripper(int32_t targetRaw, int32_t currentLimitRaw)
+{
+  if (!gripperAvailable || !gripperConfigured || !torqueEnabled)
+  {
+    Serial.println("ERROR,GRIPPER_NOT_READY");
+    return;
+  }
+  int32_t lower = min(gripperOpenRaw, gripperCloseRaw);
+  int32_t upper = max(gripperOpenRaw, gripperCloseRaw);
+  if (targetRaw < lower || targetRaw > upper || currentLimitRaw < 1 || currentLimitRaw > 200)
+  {
+    Serial.println("ERROR,GRIPPER_LIMIT");
+    return;
+  }
+  int32_t startingRaw = 0;
+  if (!readRawPosition(GRIPPER_ID, startingRaw)) return;
+  // A jaw already fully open at e.g. 1327 RAW is valid even if its configured
+  // return-to-open target is 1400 RAW. Permit the measured open band as a
+  // starting position, but never a target outside the configured endpoints.
+  if (startingRaw < GRIPPER_OPEN_BAND_MIN_RAW ||
+      startingRaw > upper + 50)
+  {
+    Serial.println("ERROR,GRIPPER_START_OUTSIDE_CONFIG");
+    return;
+  }
+  if (!ensureGripperTorque() || !setGoalRaw(GRIPPER_ID, targetRaw)) return;
+  uint32_t started = millis();
+  int arrived = 0;
+  int overCurrent = 0;
+  while (millis() - started < GRIPPER_TIMEOUT_MS)
+  {
+    if (stopMotionIfRequested()) return;
+    int32_t raw = 0;
+    int32_t current = 0;
+    if (!readRawPosition(GRIPPER_ID, raw) ||
+        !readTelemetryItem(GRIPPER_ID, ControlTableItem::PRESENT_CURRENT,
+                           "CURRENT", current))
+    {
+      holdGripper();
+      return;
+    }
+    overCurrent = labs(current) >= currentLimitRaw ? overCurrent + 1 : 0;
+    if (overCurrent >= 2)
+    {
+      if (!setGoalRaw(GRIPPER_ID, raw)) return;
+      Serial.print("GRIPPER,CONTACT,"); Serial.print(raw);
+      Serial.print(","); Serial.println(current);
+      return;
+    }
+    arrived = labs(raw - targetRaw) <= GRIPPER_ARRIVAL_COUNTS ? arrived + 1 : 0;
+    if (arrived >= 3)
+    {
+      Serial.print("GRIPPER,DONE,"); Serial.print(raw);
+      Serial.print(","); Serial.println(current);
+      return;
+    }
+    delay(20);
+  }
+  holdGripper();
+  Serial.println("ERROR,GRIPPER_TIMEOUT");
 }
 
 void sendAngles()
@@ -741,7 +880,50 @@ void handleCommand(String line)
   }
   else if (line == "CAPABILITIES")
   {
-    Serial.println("CAPABILITIES,STATE,TELEMETRY_V1");
+    Serial.print("CAPABILITIES,STATE,TELEMETRY_V1");
+    if (gripperAvailable) Serial.print(",GRIPPER_RAW_V2");
+    Serial.println();
+  }
+  else if (line == "GRIPPER_READ")
+  {
+    if (!gripperAvailable)
+    {
+      Serial.println("ERROR,GRIPPER_UNAVAILABLE");
+      return;
+    }
+    int32_t raw = 0;
+    if (!readRawPosition(GRIPPER_ID, raw)) return;
+    Serial.print("GRIPPER,RAW,"); Serial.println(raw);
+  }
+  else if (line.startsWith("GRIPPER_CONFIG,"))
+  {
+    long opened = 0, closed = 0;
+    char extra = 0;
+    if (!gripperAvailable ||
+        sscanf(line.c_str() + 15, "%ld,%ld%c", &opened, &closed, &extra) != 2 ||
+        opened < GRIPPER_OPEN_BAND_MIN_RAW ||
+        opened > GRIPPER_OPEN_BAND_MAX_RAW ||
+        closed < 2000 || closed > 2700 ||
+        closed <= opened || closed - opened > GRIPPER_MAX_TRAVEL_RAW)
+    {
+      Serial.println("ERROR,GRIPPER_CONFIG");
+      return;
+    }
+    gripperOpenRaw = (int32_t)opened;
+    gripperCloseRaw = (int32_t)closed;
+    gripperConfigured = true;
+    Serial.println("OK,GRIPPER_CONFIG");
+  }
+  else if (line.startsWith("GRIPPER_MOVE,"))
+  {
+    long target = 0, currentLimit = 0;
+    char extra = 0;
+    if (sscanf(line.c_str() + 13, "%ld,%ld%c", &target, &currentLimit, &extra) != 2)
+    {
+      Serial.println("ERROR,BAD_GRIPPER_MOVE");
+      return;
+    }
+    moveGripper((int32_t)target, (int32_t)currentLimit);
   }
   else if (line == "READ_TELEMETRY")
   {
@@ -750,6 +932,10 @@ void handleCommand(String line)
   else if (line == "REST" || line == "HOME")
   {
     moveToDegrees(HOME_ANGLES);
+  }
+  else if (line == "SCAN")
+  {
+    moveToDegrees(SCAN_ANGLES);
   }
   else if (line == "WORK")
   {
@@ -790,6 +976,11 @@ void setup()
     if (!configureMotor(MOTOR_IDS[i]))
       ok = false;
   }
+
+  // ID15 is optional for the existing arm controller. Pick-and-place checks
+  // GRIPPER_RAW_V1 before it can send any gripper or arm move.
+  if (dxl.ping(GRIPPER_ID))
+    gripperAvailable = configureGripperMotor();
 
   torqueOffAll();
 

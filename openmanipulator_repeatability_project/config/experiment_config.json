@@ -6,6 +6,11 @@
     "z_positive": "up",
     "ground_z_mm": 0.0
   },
+  "operator_rear_frame": {
+    "origin": "ID11_REAR_FACE_ESTIMATED",
+    "rear_to_axis_x_mm": 25.0,
+    "status": "PROVISIONAL_FROM_APPROX_50_MM_HOUSING"
+  },
   "physical_to_internal": {
     "x_scale": 1.0,
     "x_offset_mm": 0.0,
@@ -37,7 +42,16 @@
     "touch_sample_count": 10,
     "maximum_touch_samples": 100,
     "touch_sample_interval_ms": 50,
-    "pause_for_manual_measurement": true
+    "pause_for_manual_measurement": true,
+    "camera_payload_profile": {
+      "enabled_by_default": true,
+      "maximum_speed_scale": 0.5,
+      "minimum_touch_samples": 10,
+      "minimum_sample_interval_ms": 100,
+      "settle_seconds": 0.75,
+      "touch_dwell_seconds": 1.0,
+      "motor_tracking_warning_deg": 2.0
+    }
   },
   "experiment_points": [
     {"name": "P01", "x_mm": -35.0, "y_mm": 145.0, "z_mm": 0.0},

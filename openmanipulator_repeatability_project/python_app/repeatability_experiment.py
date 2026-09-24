@@ -56,6 +56,10 @@ class RepeatabilityRunConfig:
     sample_interval_ms: int
     pause_for_manual_measurement: bool = False
     speed_scale: float = 1.0
+    camera_payload_mode: bool = False
+    motor_tracking_warning_deg: float = config.MOTOR_TRACKING_WARNING_DEGREES
+    settle_seconds: float = config.POINT_SETTLE_SECONDS
+    touch_dwell_seconds: float = config.TOUCH_DWELL_SECONDS
     started_utc: str = field(default_factory=utc_timestamp)
 
 
@@ -444,8 +448,11 @@ class RepeatabilityWorkbook:
             ("touch_sample_count", self.run.sample_count),
             ("sample_interval_ms", self.run.sample_interval_ms),
             ("speed_scale", self.run.speed_scale),
+            ("camera_payload_mode", self.run.camera_payload_mode),
             ("motor_arrival_tolerance_deg", config.POST_MOVE_TOLERANCE_DEGREES),
-            ("motor_tracking_warning_deg", config.MOTOR_TRACKING_WARNING_DEGREES),
+            ("motor_tracking_warning_deg", self.run.motor_tracking_warning_deg),
+            ("settle_seconds", self.run.settle_seconds),
+            ("touch_dwell_seconds", self.run.touch_dwell_seconds),
             ("measurement_mode", "automatic encoder FK"),
             ("kinematics_version", config.KINEMATICS_VERSION),
             ("tcp_definition", config.TCP_DESCRIPTION),

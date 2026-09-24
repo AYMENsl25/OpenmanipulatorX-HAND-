@@ -36,6 +36,7 @@ from point_experiment import (
     plan_point_experiment,
     tcp_error_severity,
 )
+from pick_place_panel import PickPlacePanel
 from repeatability_experiment import (
     ManualMeasurement,
     PlannedPathPhase,
@@ -44,6 +45,7 @@ from repeatability_experiment import (
     TouchRecord,
 )
 from repeatability_live_plots import RepeatabilityLivePlots, RepeatabilityPlotPanel
+from rear_reference_frame import axis_to_rear_xyz, rear_to_axis_xyz
 from serial_controller import ControllerError, OpenCRController, available_ports
 from trajectory import (
     TrajectoryPoint,
@@ -57,6 +59,7 @@ from trajectory import (
     validate_xyz_trajectory,
     xyz_endpoint_points,
 )
+from vision_panel import VisionPanel
 
 
 class TrajectoryGUI(ttk.Frame):
@@ -76,17 +79,29 @@ class TrajectoryGUI(ttk.Frame):
         self.count = tk.StringVar(value="0")
         self.speed = tk.StringVar(value="0.25")
         self.target_xyz = {
-            "X": tk.StringVar(value=f"{config.WORK_XYZ_MM[0]:.1f}"),
+            "X": tk.StringVar(value=f"{config.WORK_XYZ_MM[0] + config.REAR_TO_AXIS_X_MM:.1f}"),
             "Y": tk.StringVar(value="0.0"),
             "Z": tk.StringVar(value=f"{config.WORK_XYZ_MM[2]:.1f}"),
         }
-        self.ik_preview = tk.StringVar(value="Enter XYZ, then preview before moving")
+        self.ik_preview = tk.StringVar(value=(
+            f"Enter rear-measured X; estimated ID11 rear-to-axis distance "
+            f"{config.REAR_TO_AXIS_X_MM:g} mm. Preview both frames before moving."))
         self.selected_experiment_point = tk.StringVar(value="P04")
         self.repeatability_repetitions = tk.StringVar(value=str(config.DEFAULT_REPETITIONS))
-        self.repeatability_speed = tk.StringVar(value="1.0")
-        self.repeatability_sample_count = tk.StringVar(value=str(config.TOUCH_SAMPLE_COUNT))
+        self.camera_payload_mode = tk.BooleanVar(value=config.CAMERA_PAYLOAD_ENABLED_DEFAULT)
+        self.repeatability_speed = tk.StringVar(
+            value=f"{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:.2f}"
+            if config.CAMERA_PAYLOAD_ENABLED_DEFAULT else "1.0"
+        )
+        self.repeatability_sample_count = tk.StringVar(value=str(max(
+            config.TOUCH_SAMPLE_COUNT,
+            config.CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES if config.CAMERA_PAYLOAD_ENABLED_DEFAULT else 1,
+        )))
         self.repeatability_sample_interval_ms = tk.StringVar(
-            value=str(round(config.TOUCH_SAMPLE_INTERVAL_SECONDS * 1000.0))
+            value=str(max(
+                round(config.TOUCH_SAMPLE_INTERVAL_SECONDS * 1000.0),
+                config.CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS if config.CAMERA_PAYLOAD_ENABLED_DEFAULT else 20,
+            ))
         )
         self.pause_for_manual_measurement = tk.BooleanVar(
             value=config.PAUSE_FOR_MANUAL_MEASUREMENT
@@ -127,6 +142,8 @@ class TrajectoryGUI(ttk.Frame):
         self.experiment_notebook: ttk.Notebook | None = None
         self.experiment_tab: ttk.Frame | None = None
         self.repeatability_dashboard_tab: ttk.Frame | None = None
+        self.vision_panel: VisionPanel | None = None
+        self.pick_place_panel: PickPlacePanel | None = None
         self.output_dir = Path(__file__).resolve().parents[1]
         self.logger = ExperimentLogger(project_root=self.output_dir)
         self._experiment_plan: ExperimentPlan | None = None
@@ -183,12 +200,17 @@ class TrajectoryGUI(ttk.Frame):
         experiment_tab = ttk.Frame(notebook, padding=6)
         self.experiment_tab = experiment_tab
         log_tab = ttk.Frame(notebook, padding=6)
-        for tab in (control_tab, experiment_tab, log_tab):
+        vision_tab = ttk.Frame(notebook, padding=6)
+        pick_tab = ttk.Frame(notebook, padding=6)
+        self.pick_tab = pick_tab
+        for tab in (control_tab, experiment_tab, log_tab, vision_tab, pick_tab):
             tab.rowconfigure(0, weight=1)
             tab.columnconfigure(0, weight=1)
         notebook.add(control_tab, text="1  Teach and Cartesian Control")
         notebook.add(experiment_tab, text="2  Point and Repeatability Experiment")
         notebook.add(log_tab, text="3  Session Log")
+        notebook.add(vision_tab, text="4  Live Camera and Scan Preview")
+        notebook.add(pick_tab, text="5  Camera Pick and Place")
 
         upper = ttk.Panedwindow(control_tab, orient=tk.HORIZONTAL)
         upper.grid(row=0, column=0, sticky="nsew")
@@ -208,7 +230,28 @@ class TrajectoryGUI(ttk.Frame):
         self._workspace_preview(planner_tab).grid(row=0, column=0, sticky="nsew")
         self._repeatability_dashboard(repeatability_tab).grid(row=0, column=0, sticky="nsew")
         self._status(log_tab).grid(row=0, column=0, sticky="nsew")
+        self.vision_panel = VisionPanel(
+            vision_tab,
+            controller=self.controller,
+            log_callback=self._log,
+            move_center_callback=self.scan,
+            pick_selected_callback=self._quick_pick_from_camera,
+        )
+        self.vision_panel.grid(row=0, column=0, sticky="nsew")
+        self.pick_place_panel = PickPlacePanel(
+            pick_tab, controller=self.controller, vision_panel=self.vision_panel,
+            log_callback=self._log,
+            busy_callback=lambda: ("point/repeatability run" if self._experiment_running
+                                   else "Cartesian playback" if self.playback.get() == "ON"
+                                   else None))
+        self.pick_place_panel.grid(row=0, column=0, sticky="nsew")
         ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w").grid(row=3, column=0, sticky="ew", pady=(6, 0))
+
+    def _quick_pick_from_camera(self) -> None:
+        if self.pick_place_panel is None or self.main_notebook is None:
+            return
+        self.pick_place_panel.quick_pick_dialog(
+            after_queue=lambda: self.main_notebook.select(self.pick_tab))
 
     def _show_quick_help(self) -> None:
         messagebox.showinfo(
@@ -240,7 +283,7 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Separator(frame, orient="vertical").grid(row=0, column=5, sticky="ns", padx=6)
         ttk.Button(frame, text="Torque ON", style="Primary.TButton", command=self.torque_on).grid(row=0, column=6, sticky="ew", padx=3)
         ttk.Button(frame, text="Torque OFF", style="Danger.TButton", command=self.torque_off).grid(row=0, column=7, sticky="ew", padx=3)
-        ttk.Button(frame, text="REST (straight)", command=self.rest).grid(row=1, column=3, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="SCAN (camera)", command=self.scan).grid(row=1, column=3, sticky="ew", padx=3, pady=(6, 0))
         ttk.Button(frame, text="WORK (down)", command=self.work).grid(row=1, column=4, sticky="ew", padx=3, pady=(6, 0))
         ttk.Button(frame, text="Read once", command=self.read_angles_now).grid(row=1, column=6, sticky="ew", padx=3, pady=(6, 0))
         ttk.Button(frame, text="Start live read", command=self.start_live_read).grid(row=1, column=7, sticky="ew", padx=3, pady=(6, 0))
@@ -268,13 +311,15 @@ class TrajectoryGUI(ttk.Frame):
             ttk.Label(frame, text=f"{joint}:").grid(row=row, column=2, sticky="w")
             ttk.Label(frame, textvariable=self.manual_joints[joint]).grid(row=row, column=3, sticky="w")
         for row, axis in enumerate(("X", "Y", "Z"), start=12):
-            ttk.Label(frame, text=f"TCP {axis}:").grid(row=row, column=0, sticky="w")
+            label = "TCP X from ID11 rear:" if axis == "X" else f"TCP {axis}:"
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
             ttk.Label(frame, textvariable=self.manual_xyz[axis]).grid(row=row, column=1, sticky="w")
         ttk.Label(
             frame,
             text=(
-                "REST ID14=0, q4=0; WORK ID14=82.881 deg, q4=82.881 deg; "
-                f"finger-center TCP~({config.WORK_XYZ_MM[0]:.1f},0,{config.WORK_XYZ_MM[2]:.1f}) mm"
+                f"Axis-frame SCAN TCP~({config.SCAN_XYZ_MM[0]:.1f},0,{config.SCAN_XYZ_MM[2]:.1f}) mm; "
+                "WORK ID14=82.881 deg, q4=82.881 deg; "
+                f"axis-frame finger-center TCP~({config.WORK_XYZ_MM[0]:.1f},0,{config.WORK_XYZ_MM[2]:.1f}) mm"
             ),
         ).grid(row=15, column=0, columnspan=4, sticky="w", pady=(8, 0))
         ttk.Button(frame, text="Go to taught start", command=self.go_to_teach_start).grid(row=16, column=0, columnspan=2, sticky="ew", pady=3)
@@ -283,11 +328,13 @@ class TrajectoryGUI(ttk.Frame):
 
     def _replay(self, parent=None) -> ttk.LabelFrame:
         frame = self._frame("Cartesian Replay", parent)
-        ttk.Label(frame, text="Move to one XYZ point", font=("TkDefaultFont", 9, "bold")).grid(
+        ttk.Label(frame, text="Move to one XYZ point (X from ID11 rear)",
+                  font=("TkDefaultFont", 9, "bold")).grid(
             row=0, column=0, columnspan=2, sticky="w"
         )
         for row, axis in enumerate(("X", "Y", "Z"), start=1):
-            ttk.Label(frame, text=f"Target {axis} (mm)").grid(row=row, column=0, sticky="w")
+            label = "Target X from rear (mm)" if axis == "X" else f"Target {axis} (mm)"
+            ttk.Label(frame, text=label).grid(row=row, column=0, sticky="w")
             ttk.Entry(frame, textvariable=self.target_xyz[axis], width=12).grid(row=row, column=1, sticky="ew")
         ttk.Button(frame, text="1. Preview nearest IK", command=self.preview_xyz).grid(
             row=4, column=0, columnspan=2, sticky="ew", pady=3
@@ -312,6 +359,10 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Button(frame, text="Stop playback", style="Danger.TButton", command=self.stop).grid(row=12, column=0, columnspan=2, sticky="ew", pady=3)
         self._label_value(frame, 13, "Playback", self.playback)
         self._label_value(frame, 14, "Loaded points", self.count)
+        ttk.Label(frame, text="Manual target X uses the rear reference; saved trajectory replay "
+                             "and P01-P11 experiments retain the legacy ID11-axis frame.",
+                  wraplength=390, justify="left").grid(
+            row=15, column=0, columnspan=2, sticky="w", pady=(3, 0))
         return frame
 
     def _workspace_preview(self, parent=None) -> ttk.LabelFrame:
@@ -399,6 +450,8 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Entry(setup, textvariable=self.repeatability_sample_interval_ms, width=6).grid(row=1, column=7, sticky="w", pady=(6, 0))
         ttk.Label(setup, text="Speed 0.25-1.0").grid(row=1, column=8, sticky="e", padx=(8, 2), pady=(6, 0))
         ttk.Entry(setup, textvariable=self.repeatability_speed, width=5).grid(row=1, column=9, sticky="w", pady=(6, 0))
+        ttk.Checkbutton(setup, text="Camera payload", variable=self.camera_payload_mode, command=self._update_camera_payload_threshold).grid(row=1, column=10, sticky="w", padx=(8, 2), pady=(6, 0))
+        ttk.Button(setup, text="Apply camera settings", command=self._apply_camera_payload_profile).grid(row=1, column=11, sticky="ew", padx=2, pady=(6, 0))
         ttk.Button(setup, text="Run sequence", style="Primary.TButton", command=self.run_repeatability_sequence).grid(row=2, column=0, columnspan=4, sticky="ew", padx=2, pady=(8, 0))
         ttk.Button(setup, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).grid(row=2, column=4, columnspan=3, sticky="ew", padx=2, pady=(8, 0))
         ttk.Button(setup, text="Pop out graphs", command=self._show_repeatability_plots).grid(row=2, column=7, columnspan=2, sticky="ew", padx=2, pady=(8, 0))
@@ -415,6 +468,7 @@ class TrajectoryGUI(ttk.Frame):
         ).grid(row=0, column=0, sticky="w", pady=(0, 4))
         self.repeatability_plot_panel = RepeatabilityPlotPanel(plot_area)
         self.repeatability_plot_panel.grid(row=1, column=0, sticky="nsew")
+        self._update_camera_payload_threshold()
         return frame
 
     def _show_repeatability_dashboard(self) -> None:
@@ -429,6 +483,42 @@ class TrajectoryGUI(ttk.Frame):
         if self.repeatability_plots is not None and self.repeatability_plots.exists():
             self.repeatability_plots.clear()
         self._log("Repeatability graphs cleared; saved Excel and telemetry files were kept")
+
+    def _active_motor_warning_threshold(self) -> float:
+        return (
+            config.CAMERA_PAYLOAD_MOTOR_TRACKING_WARNING_DEGREES
+            if self.camera_payload_mode.get()
+            else config.MOTOR_TRACKING_WARNING_DEGREES
+        )
+
+    def _update_camera_payload_threshold(self) -> None:
+        warning = self._active_motor_warning_threshold()
+        if self.repeatability_plot_panel is not None:
+            self.repeatability_plot_panel.set_motor_warning_threshold(warning)
+        if self.repeatability_plots is not None and self.repeatability_plots.exists():
+            self.repeatability_plots.set_motor_warning_threshold(warning)
+
+    def _apply_camera_payload_profile(self) -> None:
+        if not self.camera_payload_mode.get():
+            self._update_camera_payload_threshold()
+            self._log("Camera payload mode is OFF; existing experiment settings were kept")
+            return
+        self.repeatability_speed.set(f"{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:.2f}")
+        self.repeatability_sample_count.set(str(max(
+            int(self.repeatability_sample_count.get() or 0),
+            config.CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES,
+        )))
+        self.repeatability_sample_interval_ms.set(str(max(
+            int(self.repeatability_sample_interval_ms.get() or 0),
+            config.CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS,
+        )))
+        self._update_camera_payload_threshold()
+        self._log(
+            "Camera payload profile applied: speed <= "
+            f"{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:.2f}, samples >= "
+            f"{config.CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES}, interval >= "
+            f"{config.CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS} ms; 10-degree hard stop unchanged"
+        )
 
     def _open_repeatability_window(self) -> None:
         if self.repeatability_window is not None and self.repeatability_window.winfo_exists():
@@ -466,14 +556,16 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Label(selection, text="Motion speed (0.25–1.0)").grid(row=3, column=0, columnspan=3, sticky="w", pady=5)
         ttk.Entry(selection, textvariable=self.repeatability_speed, width=8).grid(row=3, column=3, sticky="w")
         ttk.Label(selection, text="1.0 = existing speed; 0.5 = half speed").grid(row=3, column=4, columnspan=4, sticky="w")
+        ttk.Checkbutton(selection, text="Camera payload mode", variable=self.camera_payload_mode, command=self._update_camera_payload_threshold).grid(row=4, column=0, columnspan=2, sticky="w", padx=4, pady=(4, 0))
+        ttk.Button(selection, text="Apply camera settings", command=self._apply_camera_payload_profile).grid(row=4, column=2, columnspan=2, sticky="ew", padx=4, pady=(4, 0))
         ttk.Button(selection, text="Run checked sequence", style="Primary.TButton", command=self.run_repeatability_sequence).grid(
-            row=4, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
+            row=5, column=0, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
         )
         ttk.Button(selection, text="STOP MOTION", style="Danger.TButton", command=self.stop_point_experiment).grid(
-            row=4, column=4, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
+            row=5, column=4, columnspan=4, sticky="ew", padx=4, pady=(8, 0)
         )
         ttk.Button(selection, text="Show live plots", command=self._show_repeatability_plots).grid(
-            row=5, column=0, columnspan=8, sticky="ew", padx=4, pady=(6, 0)
+            row=6, column=0, columnspan=8, sticky="ew", padx=4, pady=(6, 0)
         )
 
         ttk.Label(window, text="Automatic encoder sampling; XYZ and motor error plots are saved with each run.").grid(row=1, column=0, sticky="w", padx=10, pady=8)
@@ -518,6 +610,7 @@ class TrajectoryGUI(ttk.Frame):
             return
         if self.repeatability_plots is None or not self.repeatability_plots.exists():
             self.repeatability_plots = RepeatabilityLivePlots(self.master)
+        self.repeatability_plots.set_motor_warning_threshold(self._active_motor_warning_threshold())
         self.repeatability_plots.show()
 
     def _append_repeatability_plot_result(self, result) -> None:
@@ -580,11 +673,14 @@ class TrajectoryGUI(ttk.Frame):
     def load_experiment_point(self) -> None:
         name = self.selected_experiment_point.get()
         point = experiment_points()[name]
-        for axis, value in zip(("X", "Y", "Z"), (point.x, point.y, point.z), strict=True):
+        rear_point = axis_to_rear_xyz(point)
+        for axis, value in zip(("X", "Y", "Z"),
+                               (rear_point.x, rear_point.y, rear_point.z), strict=True):
             self.target_xyz[axis].set(f"{value:.3f}")
         self._draw_workspace(name)
         self._log(
-            f"Loaded {name}: physical XYZ=({point.x:.1f}, {point.y:.1f}, {point.z:.1f}) mm; "
+            f"Loaded legacy axis-frame {name}: X axis={point.x:.1f} -> "
+            f"X rear={rear_point.x:.1f} mm; Y={point.y:.1f}, Z={point.z:.1f} mm; "
             "press PREVIEW before motion"
         )
 
@@ -758,6 +854,36 @@ class TrajectoryGUI(ttk.Frame):
             speed_scale = float(self.repeatability_speed.get())
             if not math.isfinite(speed_scale) or not 0.25 <= speed_scale <= 1.0:
                 raise ValueError("Repeatability motion speed must be between 0.25 and 1.0")
+            camera_payload_mode = bool(self.camera_payload_mode.get())
+            if camera_payload_mode:
+                if speed_scale > config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:
+                    raise ValueError(
+                        "Camera payload mode limits speed to "
+                        f"{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:.2f}. "
+                        "Press Apply camera settings, then run again."
+                    )
+                if sample_count < config.CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES:
+                    raise ValueError(
+                        "Camera payload mode requires at least "
+                        f"{config.CAMERA_PAYLOAD_MINIMUM_TOUCH_SAMPLES} samples per touch."
+                    )
+                if sample_interval_ms < config.CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS:
+                    raise ValueError(
+                        "Camera payload mode requires a sample interval of at least "
+                        f"{config.CAMERA_PAYLOAD_MINIMUM_SAMPLE_INTERVAL_MS} ms."
+                    )
+            warning_deg = (
+                config.CAMERA_PAYLOAD_MOTOR_TRACKING_WARNING_DEGREES
+                if camera_payload_mode else config.MOTOR_TRACKING_WARNING_DEGREES
+            )
+            settle_seconds = (
+                config.CAMERA_PAYLOAD_SETTLE_SECONDS
+                if camera_payload_mode else config.POINT_SETTLE_SECONDS
+            )
+            touch_dwell_seconds = (
+                config.CAMERA_PAYLOAD_TOUCH_DWELL_SECONDS
+                if camera_payload_mode else config.TOUCH_DWELL_SECONDS
+            )
             state = self.controller.read_robot_state()
             plan = plan_point_experiment(names=names, starting_reference=state.joints)
             self._experiment_plan = plan
@@ -781,7 +907,10 @@ class TrajectoryGUI(ttk.Frame):
                 f"Checked points: {', '.join(names)}\n"
                 f"Repetitions: {repetitions}; total touches: {total_touches}\n"
                 f"Motion speed scale: {speed_scale:.2f}\n"
+                f"Camera payload mode: {'ON' if camera_payload_mode else 'OFF'}; "
+                f"warning at {warning_deg:.2f} deg; hard stop remains {config.POST_MOVE_TOLERANCE_DEGREES:.1f} deg\n"
                 f"Each touch: {sample_count} telemetry samples at {sample_interval_ms} ms.\n"
+                f"Settle: {settle_seconds:.2f} s; touch dwell: {touch_dwell_seconds:.2f} s.\n"
                 "After each point the robot retracts and returns to WORK.\n"
                 f"{manual_text}\n\n"
                 "Clear the full workspace, keep one hand near STOP, and confirm motion."
@@ -802,6 +931,10 @@ class TrajectoryGUI(ttk.Frame):
                 sample_interval_ms=sample_interval_ms,
                 pause_for_manual_measurement=pause_manual,
                 speed_scale=speed_scale,
+                camera_payload_mode=camera_payload_mode,
+                motor_tracking_warning_deg=warning_deg,
+                settle_seconds=settle_seconds,
+                touch_dwell_seconds=touch_dwell_seconds,
             )
             workbook = RepeatabilityWorkbook(self.output_dir, run)
             workbook.add_event("repeatability_run_started", details.replace("\n", "; "))
@@ -927,7 +1060,12 @@ class TrajectoryGUI(ttk.Frame):
         try:
             self.controller.move_motor_angles(phase.motor_angles)
             errors = self.controller.last_motor_tracking_errors
-            if max(errors) > config.MOTOR_TRACKING_WARNING_DEGREES:
+            run = self._repeatability_workbook.run if self._repeatability_workbook else None
+            warning_deg = (
+                run.motor_tracking_warning_deg
+                if run is not None else config.MOTOR_TRACKING_WARNING_DEGREES
+            )
+            if max(errors) > warning_deg:
                 details = f"Cycle {cycle} {point_name} {phase.phase}: motor tracking errors ID11–14={tuple(round(e, 3) for e in errors)} deg; accepted within 10-degree collection tolerance"
                 self.logger.log_history("motor_tracking_warning", category="measurement", context={"cycle": cycle, "point": point_name, "phase": phase.phase, "errors_deg": errors})
                 if self._repeatability_workbook is not None:
@@ -935,10 +1073,11 @@ class TrajectoryGUI(ttk.Frame):
                 self.after(0, self._log, "WARNING: " + details)
         finally:
             self._experiment_motion_active = False
+        run = self._repeatability_workbook.run if self._repeatability_workbook else None
         wait_seconds = (
-            config.TOUCH_DWELL_SECONDS
+            (run.touch_dwell_seconds if run is not None else config.TOUCH_DWELL_SECONDS)
             if phase.phase == "TOUCH"
-            else config.POINT_SETTLE_SECONDS
+            else (run.settle_seconds if run is not None else config.POINT_SETTLE_SECONDS)
         )
         if self._experiment_stop.wait(wait_seconds):
             return
@@ -1078,7 +1217,10 @@ class TrajectoryGUI(ttk.Frame):
                         self.controller.move_work()
                     finally:
                         self._experiment_motion_active = False
-                    if self._experiment_stop.wait(config.POINT_SETTLE_SECONDS):
+                    run = self._repeatability_workbook.run if self._repeatability_workbook else None
+                    if self._experiment_stop.wait(
+                        run.settle_seconds if run is not None else config.POINT_SETTLE_SECONDS
+                    ):
                         break
                     work_state = self.controller.read_robot_state()
                     work_error = math.dist(
@@ -1381,27 +1523,31 @@ class TrajectoryGUI(ttk.Frame):
 
     def _nearest_ik_from_current(self):
         try:
-            target = tuple(float(self.target_xyz[axis].get().strip()) for axis in ("X", "Y", "Z"))
+            rear_target = XYZ(*(float(self.target_xyz[axis].get().strip())
+                                for axis in ("X", "Y", "Z")))
         except ValueError as exc:
             raise ValueError("Enter numeric X, Y, and Z values in millimetres") from exc
+        axis_target = rear_to_axis_xyz(rear_target)
         current_motors = self.controller.read_motor_angles()
         current_joints = motor_to_fk_angles(current_motors)
-        physical_result = inverse_kinematics_physical(*target, reference=current_joints)
+        physical_result = inverse_kinematics_physical(
+            axis_target.x, axis_target.y, axis_target.z, reference=current_joints)
         result = physical_result.ik
         validate_ik_solution(result)
         deltas = tuple(
             normalize_angle(goal - current)
             for goal, current in zip(result.joint_angles.as_tuple(), current_joints.as_tuple(), strict=True)
         )
-        return physical_result, current_motors, current_joints, result, deltas
+        return rear_target, physical_result, current_motors, current_joints, result, deltas
 
     def preview_xyz(self) -> None:
         try:
-            physical_result, _motors, _joints, result, deltas = self._nearest_ik_from_current()
+            rear_target, physical_result, _motors, _joints, result, deltas = self._nearest_ik_from_current()
             target = physical_result.physical_target
             internal = physical_result.internal_target
             text = (
-                f"Physical XYZ=({target.x:.1f}, {target.y:.1f}, {target.z:.1f}) mm; "
+                f"Entered rear-frame XYZ=({rear_target.x:.1f}, {rear_target.y:.1f}, {rear_target.z:.1f}) mm; "
+                f"robot-axis XYZ=({target.x:.1f}, {target.y:.1f}, {target.z:.1f}) mm; "
                 f"internal IK XYZ=({internal.x:.1f}, {internal.y:.1f}, {internal.z:.1f}) mm; "
                 f"nearest q=({result.joint_angles.theta1:.1f}, {result.joint_angles.theta2:.1f}, "
                 f"{result.joint_angles.theta3:.1f}, {result.joint_angles.theta4:.1f}) deg; "
@@ -1417,15 +1563,18 @@ class TrajectoryGUI(ttk.Frame):
         try:
             if not self.controller.status.torque_on:
                 raise ControllerError("Turn torque ON before MOVE TO XYZ")
-            physical_result, _motors, _joints, result, deltas = self._nearest_ik_from_current()
+            rear_target, physical_result, _motors, _joints, result, deltas = self._nearest_ik_from_current()
             target = physical_result.physical_target
             internal = physical_result.internal_target
             preview = (
-                f"Physical experiment XYZ: ({target.x:.1f}, {target.y:.1f}, {target.z:.1f}) mm\n"
+                f"Entered rear-frame XYZ: ({rear_target.x:.1f}, {rear_target.y:.1f}, {rear_target.z:.1f}) mm\n"
+                f"Robot-axis XYZ: ({target.x:.1f}, {target.y:.1f}, {target.z:.1f}) mm\n"
                 f"Transformed internal XYZ: ({internal.x:.1f}, {internal.y:.1f}, {internal.z:.1f}) mm\n"
                 f"Joint movement: ({deltas[0]:+.1f}, {deltas[1]:+.1f}, {deltas[2]:+.1f}, {deltas[3]:+.1f}) deg\n"
                 f"Predicted error: {result.position_error:.3f} mm\n\n"
-                "Clear the workspace and support the arm. Move now?"
+                f"The {config.REAR_TO_AXIS_X_MM:g} mm rear-to-axis offset is PROVISIONAL, not physically verified.\n"
+                "Clear the workspace and support the arm. Use only a supervised\n"
+                "above-workspace test until the offset is measured. Move now?"
             )
             if not messagebox.askyesno("Confirm nearest IK movement", preview):
                 self._log("XYZ movement cancelled")
@@ -1434,8 +1583,10 @@ class TrajectoryGUI(ttk.Frame):
             actual = self.controller.read_motor_angles()
             actual_internal = forward_kinematics(actual)
             actual_physical = forward_kinematics_physical(actual)
+            actual_rear = axis_to_rear_xyz(actual_physical)
             self._log(
-                f"XYZ move complete; physical FK=({actual_physical.x:.3f}, {actual_physical.y:.3f}, "
+                f"XYZ move complete; rear-frame FK=({actual_rear.x:.3f}, {actual_rear.y:.3f}, "
+                f"{actual_rear.z:.3f}) mm; axis-frame FK=({actual_physical.x:.3f}, {actual_physical.y:.3f}, "
                 f"{actual_physical.z:.3f}) mm; internal FK=({actual_internal.x:.3f}, "
                 f"{actual_internal.y:.3f}, {actual_internal.z:.3f}) mm"
             )
@@ -1542,18 +1693,23 @@ class TrajectoryGUI(ttk.Frame):
             self.manual_angles[motor_id].set(f"{value:.3f} deg{suffix}")
         for joint, value in zip(("q1", "q2", "q3", "q4"), state.joints.as_tuple(), strict=True):
             self.manual_joints[joint].set(f"{value:.3f} deg")
+        rear_xyz = axis_to_rear_xyz(state.physical_xyz)
         for axis, value in zip(
             ("X", "Y", "Z"),
-            (state.physical_xyz.x, state.physical_xyz.y, state.physical_xyz.z),
+            (rear_xyz.x, rear_xyz.y, rear_xyz.z),
             strict=True,
         ):
             self.manual_xyz[axis].set(f"{value:.3f} mm")
         if announce:
             self._log(
-                "Live state: motors={} deg; q={} deg; physical XYZ=({:.3f},{:.3f},{:.3f}) mm; "
+                "Live state: motors={} deg; q={} deg; rear XYZ=({:.3f},{:.3f},{:.3f}) mm; "
+                "axis XYZ=({:.3f},{:.3f},{:.3f}) mm; "
                 "internal XYZ=({:.3f},{:.3f},{:.3f}) mm".format(
                     tuple(round(value, 3) for value in state.motors.as_tuple()),
                     tuple(round(value, 3) for value in state.joints.as_tuple()),
+                    rear_xyz.x,
+                    rear_xyz.y,
+                    rear_xyz.z,
                     state.physical_xyz.x,
                     state.physical_xyz.y,
                     state.physical_xyz.z,
@@ -1583,6 +1739,8 @@ class TrajectoryGUI(ttk.Frame):
         self._telemetry_inflight = False
         self._telemetry_failures = 0
         self._display_robot_state(state, announce=announce)
+        if self.vision_panel is not None:
+            self.vision_panel.set_robot_state(state)
         try:
             error_mm = None
             if self._telemetry_target is not None:
@@ -1656,6 +1814,10 @@ class TrajectoryGUI(ttk.Frame):
             self._error(exc)
 
     def disconnect(self) -> None:
+        if self.pick_place_panel is not None and self.pick_place_panel.running:
+            self.pick_place_panel.stop()
+            self._log("Pick/place STOP requested; wait for the worker to stop before disconnecting")
+            return
         self.stop_live_read()
         self.controller.disconnect()
         self.connection_state.set("DISCONNECTED")
@@ -1663,11 +1825,18 @@ class TrajectoryGUI(ttk.Frame):
         self._log("Disconnected")
 
     def _close(self) -> None:
+        if self.pick_place_panel is not None and self.pick_place_panel.running:
+            self.pick_place_panel.stop()
+            messagebox.showwarning("Pick/place stopping",
+                                   "STOP requested. Wait until the pick/place worker reports stopped, then close.")
+            return
         self._experiment_stop.set()
         self._manual_measurement_continue.set()
         self._play_stop.set()
         try:
             self.stop_live_read()
+            if self.vision_panel is not None:
+                self.vision_panel.stop_camera()
             if self.controller.status.connected:
                 self.controller.disconnect()
             self.logger.log_history("gui_session_closed", category="session")
@@ -1702,9 +1871,11 @@ class TrajectoryGUI(ttk.Frame):
             self.torque.set("OFF")
             motors = self.controller.read_motor_angles()
             xyz = forward_kinematics_physical(motors)
+            rear_xyz = axis_to_rear_xyz(xyz)
             for motor_id, value in zip((11, 12, 13, 14), motors.as_tuple(), strict=True):
                 self.manual_angles[motor_id].set(f"{value:.3f} deg")
-            for axis, value in zip(("X", "Y", "Z"), (xyz.x, xyz.y, xyz.z), strict=True):
+            for axis, value in zip(("X", "Y", "Z"),
+                                   (rear_xyz.x, rear_xyz.y, rear_xyz.z), strict=True):
                 self.manual_xyz[axis].set(f"{value:.3f} mm")
             joints = motor_to_fk_angles(motors)
             for joint, value in zip(("q1", "q2", "q3", "q4"), joints.as_tuple(), strict=True):
@@ -1715,7 +1886,8 @@ class TrajectoryGUI(ttk.Frame):
                 "Manual pose: "
                 f"motors=({motors.id11:.3f},{motors.id12:.3f},{motors.id13:.3f},{motors.id14:.3f}) deg, "
                 f"joints=({joints.theta1:.3f},{joints.theta2:.3f},{joints.theta3:.3f},{joints.theta4:.3f}) deg, "
-                f"physical XYZ=({xyz.x:.3f},{xyz.y:.3f},{xyz.z:.3f}) mm; "
+                f"rear XYZ=({rear_xyz.x:.3f},{rear_xyz.y:.3f},{rear_xyz.z:.3f}) mm; "
+                f"axis XYZ=({xyz.x:.3f},{xyz.y:.3f},{xyz.z:.3f}) mm; "
                 f"saved capture {len(self.manual_points)} to {path.name}"
             )
         except (ControllerError, OSError, ValueError) as exc:
@@ -1729,22 +1901,27 @@ class TrajectoryGUI(ttk.Frame):
         except ControllerError as exc:
             self._error(exc)
 
-    def rest(self) -> None:
+    def scan(self) -> None:
         try:
             if not self.controller.status.torque_on:
-                raise ControllerError("Turn torque ON first; it will hold the current pose before REST")
+                raise ControllerError("Turn torque ON first; it will hold the current pose before SCAN")
             if not messagebox.askyesno(
-                "Confirm REST movement",
-                "Support the arm and clear the workspace. Move slowly to the straight raised REST pose?",
+                "Confirm SCAN movement",
+                "Camera attached: clear the full workspace and support the arm if needed. Move slowly to the centered SCAN pose?",
             ):
                 return
-            self.controller.move_rest()
+            self.controller.move_scan()
             self._log(
-                "Moved to REST: q=(0,0,0,0); official frame=(286,0,204.5), "
-                f"finger-center TCP=({config.REST_XYZ_MM[0]:.1f},0,{config.REST_XYZ_MM[2]:.1f}) mm"
+                "Moved to SCAN: "
+                f"q={tuple(round(value, 3) for value in config.SCAN_JOINT_DEGREES)} deg; "
+                f"finger-center TCP=({config.SCAN_XYZ_MM[0]:.1f},0,{config.SCAN_XYZ_MM[2]:.1f}) mm"
             )
         except ControllerError as exc:
             self._error(exc)
+
+    def rest(self) -> None:
+        """Compatibility alias for callers of the former GUI action."""
+        self.scan()
 
     def work(self) -> None:
         try:
@@ -1874,6 +2051,10 @@ class TrajectoryGUI(ttk.Frame):
     def stop(self) -> None:
         try:
             self._play_stop.set()
+            if self.pick_place_panel is not None and self.pick_place_panel.running:
+                self.pick_place_panel.stop()
+                self._log("Pick/place STOP requested")
+                return
             self.controller.stop()
             self.playback.set("OFF")
             self._log("Playback stopped")
@@ -1884,7 +2065,7 @@ class TrajectoryGUI(ttk.Frame):
 def run() -> None:
     root = tk.Tk()
     root.title("OpenMANIPULATOR-X Cartesian and Repeatability Lab")
-    root.geometry("1100x850")
-    root.minsize(760, 600)
+    root.geometry("950x780")
+    root.minsize(680, 550)
     TrajectoryGUI(root)
     root.mainloop()
