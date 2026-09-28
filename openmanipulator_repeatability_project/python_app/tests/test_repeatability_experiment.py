@@ -70,10 +70,12 @@ class RepeatabilityExperimentTests(unittest.TestCase):
         controller._command = command
         controller.set_motion_speed(0.5)
         self.assertEqual(commands, ["SET_SPEED,0.500"])
-        for value in (0.0, 1.1, float("nan")):
+        controller.set_motion_speed(2.0)
+        self.assertEqual(commands[-1], "SET_SPEED,2.000")
+        for value in (0.0, 2.1, float("nan")):
             with self.assertRaises(ValueError):
                 controller.set_motion_speed(value)
-        self.assertEqual(len(commands), 1)
+        self.assertEqual(len(commands), 2)
 
     def test_telemetry_protocol_parser(self) -> None:
         groups = []

@@ -12,7 +12,9 @@ import math
 from pathlib import Path
 
 
-EXPERIMENT_CONFIG_PATH = Path(__file__).resolve().parents[1] / "config" / "experiment_config.json"
+from app_paths import PROJECT_ROOT
+
+EXPERIMENT_CONFIG_PATH = PROJECT_ROOT / "config" / "experiment_config.json"
 with EXPERIMENT_CONFIG_PATH.open("r", encoding="utf-8") as config_file:
     EXPERIMENT_CONFIG = json.load(config_file)
 
@@ -24,6 +26,7 @@ SOFT_WORKSPACE = EXPERIMENT_CONFIG["soft_workspace"]
 POINT_EXPERIMENT = EXPERIMENT_CONFIG["point_experiment"]
 REPEATABILITY_EXPERIMENT = EXPERIMENT_CONFIG["repeatability_experiment"]
 CAMERA_PAYLOAD_PROFILE = REPEATABILITY_EXPERIMENT["camera_payload_profile"]
+PICK_PLACE_MOTION = EXPERIMENT_CONFIG["pick_place_motion"]
 EXPERIMENT_POINTS = tuple(EXPERIMENT_CONFIG["experiment_points"])
 GROUND_Z_MM = float(PHYSICAL_FRAME["ground_z_mm"])
 APPROACH_CLEARANCE_MM = float(POINT_EXPERIMENT["approach_clearance_mm"])
@@ -55,6 +58,14 @@ CAMERA_PAYLOAD_SETTLE_SECONDS = float(CAMERA_PAYLOAD_PROFILE["settle_seconds"])
 CAMERA_PAYLOAD_TOUCH_DWELL_SECONDS = float(CAMERA_PAYLOAD_PROFILE["touch_dwell_seconds"])
 CAMERA_PAYLOAD_MOTOR_TRACKING_WARNING_DEGREES = float(
     CAMERA_PAYLOAD_PROFILE["motor_tracking_warning_deg"]
+)
+PICK_PLACE_DEFAULT_SPEED_SCALE = float(PICK_PLACE_MOTION["default_speed_scale"])
+PICK_PLACE_MAXIMUM_SPEED_SCALE = float(PICK_PLACE_MOTION["maximum_speed_scale"])
+PICK_PLACE_POST_GRASP_SETTLE_SECONDS = float(
+    PICK_PLACE_MOTION["post_grasp_settle_seconds"]
+)
+PICK_PLACE_POST_RELEASE_SETTLE_SECONDS = float(
+    PICK_PLACE_MOTION["post_release_settle_seconds"]
 )
 
 Z_BASE = 17.0

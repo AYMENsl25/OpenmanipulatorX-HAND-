@@ -81,8 +81,9 @@ static const uint32_t SAMPLE_INTERVAL_MS = 50;
 static const uint32_t MAX_RECORDING_MS = 30000;
 static const size_t MAX_TRAJECTORY_POINTS = 600;
 
-// S-curve smooth interpolation parameters
-static const uint32_t STEP_INTERVAL_MS = 20; // 50 Hz control loop
+// Smooth interpolation parameters. A 16 ms step gives finer visible motion
+// while retaining enough bus time for all four sequential goal writes.
+static const uint32_t STEP_INTERVAL_MS = 16; // 62.5 Hz control loop
 static const uint32_t MIN_MOVE_TIME_MS = 120;
 static const uint32_t MAX_MOVE_TIME_MS = 4500;
 static float motionSpeedScale = 1.0f;
@@ -96,6 +97,13 @@ Dynamixel2Arduino dxl(DXL_SERIAL, DXL_DIR_PIN);
 
 bool torqueEnabled = false;
 String rxLine = "";
+// Latest-target jogging is serviced by loop(), never by a blocking move.
+bool jogStreamActive = false;
+uint32_t jogLastPacket = 0, jogLastTick = 0;
+float jogCommandRaw[4], jogTargetRaw[4];
+static const uint32_t JOG_WATCHDOG_MS = 250;
+static const float JOG_MAX_LEAD_DEG = 5.0f;
+static const float JOG_MAX_DEG_PER_SEC = 20.0f;
 
 struct TrajectoryPoint
 {
@@ -616,7 +624,7 @@ bool waitForFinalTargets(const int32_t targets[])
   return false;
 }
 
-bool moveToDegrees(const float targetDegrees[])
+bool moveToDegrees(const float targetDegrees[], bool shortJog = false)
 {
   if (!torqueEnabled)
   {
@@ -660,6 +668,9 @@ bool moveToDegrees(const float targetDegrees[])
   if (moveDurationMs > MAX_MOVE_TIME_MS)
     moveDurationMs = MAX_MOVE_TIME_MS;
   moveDurationMs = (uint32_t)((float)moveDurationMs / motionSpeedScale);
+  // Gamepad targets are at most a few millimetres apart. Bound each command
+  // so release of the enable button cannot leave a long queued movement.
+  if (shortJog) moveDurationMs = 260;
 
   uint16_t steps = (uint16_t)(moveDurationMs / STEP_INTERVAL_MS);
   if (steps < 1)
@@ -667,14 +678,16 @@ bool moveToDegrees(const float targetDegrees[])
 
   Serial.println("MOVING");
 
-  // S-Curve (minimum-jerk cosine ramp) trajectory generation
+  // Quintic minimum-jerk trajectory. Position, velocity, and acceleration are
+  // continuous and velocity/acceleration are zero at both ends.
   for (uint16_t step = 1; step <= steps; step++)
   {
     if (stopMotionIfRequested())
       return false;
     float ratio = (float)step / (float)steps;
-    // Cosine S-curve profile: zero initial and final velocity
-    float sRatio = 0.5f * (1.0f - cosf(3.14159265358979323846f * ratio));
+    float ratio2 = ratio * ratio;
+    float ratio3 = ratio2 * ratio;
+    float sRatio = ratio3 * (10.0f + ratio * (-15.0f + 6.0f * ratio));
 
     for (size_t i = 0; i < MOTOR_COUNT; i++)
     {
@@ -787,12 +800,15 @@ bool parseMoveCommand(const String &line, float targets[])
 
     if (part == 0)
     {
-      if (token != "MOVE_MOTORS")
+      if (token != "MOVE_MOTORS" && token != "JOG_MOTORS" && token != "JOG_STREAM")
         return false;
     }
     else if (part >= 1 && part <= 4)
     {
-      targets[part - 1] = token.toFloat();
+      char *end = NULL;
+      targets[part - 1] = strtof(token.c_str(), &end);
+      if (end == token.c_str() || *end != '\0' || !isfinite(targets[part - 1]))
+        return false;
       if (!validDegrees(targets[part - 1]))
         return false;
     }
@@ -810,6 +826,68 @@ bool parseMoveCommand(const String &line, float targets[])
   return part == 4;
 }
 
+bool stopJogStream()
+{
+  jogStreamActive = false;
+  return synchronizeGoalsToPresent();
+}
+
+bool readJogPositions(int32_t raw[])
+{
+  for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    if (!readRawPosition(MOTOR_IDS[i], raw[i])) return false;
+  return true;
+}
+
+void sendJogState(const int32_t raw[])
+{
+  Serial.print("JOG_STATE");
+  for (size_t i = 0; i < MOTOR_COUNT; ++i)
+  { Serial.print(","); Serial.print(raw[i]); }
+  Serial.println();
+}
+
+void serviceJogStream()
+{
+  if (!jogStreamActive) return;
+  uint32_t now = millis();
+  if (now - jogLastPacket >= JOG_WATCHDOG_MS)
+  {
+    stopJogStream();
+    Serial.println("ERROR,JOG_WATCHDOG");
+    return;
+  }
+  if (now - jogLastTick < STEP_INTERVAL_MS) return;
+  float dt = fminf((now - jogLastTick) / 1000.0f, 0.032f);
+  jogLastTick = now;
+  int32_t actual[MOTOR_COUNT];
+  if (!readJogPositions(actual)) { stopJogStream(); return; }
+  float maxDelta = 0.0f;
+  for (size_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    if (!safeCalibratedRaw(i, actual[i]) ||
+        fabsf(jogTargetRaw[i] - actual[i]) > JOG_MAX_LEAD_DEG * COUNTS_PER_DEGREE)
+    {
+      stopJogStream();
+      Serial.println("ERROR,JOG_TRACKING_OR_JOINT_LIMIT");
+      return;
+    }
+    maxDelta = fmaxf(maxDelta, fabsf(jogTargetRaw[i] - jogCommandRaw[i]));
+  }
+  // Shared interpolation fraction keeps all joints on the checked segment.
+  // Existing servo acceleration profiles soften these small continuous updates.
+  float fraction = fminf(1.0f, dt / 0.080f);
+  if (maxDelta > 0.0f)
+    fraction = fminf(fraction, JOG_MAX_DEG_PER_SEC * COUNTS_PER_DEGREE * dt / maxDelta);
+  for (size_t i = 0; i < MOTOR_COUNT; ++i)
+  {
+    jogCommandRaw[i] += fraction * (jogTargetRaw[i] - jogCommandRaw[i]);
+    int32_t next = (int32_t)lroundf(jogCommandRaw[i]);
+    if (!safeCalibratedRaw(i, next) || !setGoalRaw(MOTOR_IDS[i], next))
+    { stopJogStream(); return; }
+  }
+}
+
 void handleCommand(String line)
 {
   line.trim();
@@ -817,6 +895,53 @@ void handleCommand(String line)
 
   if (line.length() == 0)
     return;
+
+  if (line == "JOG_STREAM_STOP" || (line == "STOP" && jogStreamActive))
+  {
+    if (stopJogStream()) Serial.println("JOG_STOPPED");
+    return;
+  }
+  if (line == "JOG_STREAM_START")
+  {
+    if (!torqueEnabled || teaching || jogStreamActive)
+    { Serial.println("ERROR,JOG_NOT_READY"); return; }
+    int32_t actual[MOTOR_COUNT];
+    if (!readJogPositions(actual)) return;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+      if (!safeCalibratedRaw(i, actual[i]))
+      { Serial.println("ERROR,JOG_JOINT_LIMIT"); return; }
+    }
+    if (!synchronizeGoalsToPresent()) return;
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+      jogCommandRaw[i] = jogTargetRaw[i] = actual[i];
+    jogLastPacket = jogLastTick = millis();
+    jogStreamActive = true;
+    sendJogState(actual);
+    return;
+  }
+  if (line.startsWith("JOG_STREAM,"))
+  {
+    if (!jogStreamActive) { Serial.println("ERROR,JOG_NOT_ACTIVE"); return; }
+    float targets[MOTOR_COUNT];
+    int32_t actual[MOTOR_COUNT], next[MOTOR_COUNT];
+    if (!parseMoveCommand(line, targets))
+    { stopJogStream(); Serial.println("ERROR,BAD_COMMAND"); return; }
+    if (!readJogPositions(actual)) { stopJogStream(); return; }
+    for (size_t i = 0; i < MOTOR_COUNT; ++i)
+    {
+      next[i] = degreesToNearestRaw(targets[i], actual[i]);
+      if (!safeCalibratedRaw(i, next[i]) ||
+          labs(next[i] - actual[i]) > JOG_MAX_LEAD_DEG * COUNTS_PER_DEGREE)
+      { stopJogStream(); Serial.println("ERROR,JOG_TARGET_LIMIT"); return; }
+    }
+    for (size_t i = 0; i < MOTOR_COUNT; ++i) jogTargetRaw[i] = next[i];
+    jogLastPacket = millis();
+    sendJogState(actual); // Acknowledge receipt, without waiting for arrival.
+    return;
+  }
+  if (jogStreamActive && line != "PING")
+  { Serial.println("ERROR,JOG_ACTIVE"); return; }
 
   if (line == "PING")
   {
@@ -844,7 +969,7 @@ void handleCommand(String line)
   else if (line.startsWith("SET_SPEED,"))
   {
     float scale = line.substring(10).toFloat();
-    if (!isfinite(scale) || scale < 0.25f || scale > 1.0f || teaching)
+    if (!isfinite(scale) || scale < 0.25f || scale > 2.0f || teaching)
       Serial.println("ERROR,INVALID_SPEED");
     else
     {
@@ -880,7 +1005,7 @@ void handleCommand(String line)
   }
   else if (line == "CAPABILITIES")
   {
-    Serial.print("CAPABILITIES,STATE,TELEMETRY_V1");
+    Serial.print("CAPABILITIES,STATE,TELEMETRY_V1,GAMEPAD_JOG_V1,GAMEPAD_STREAM_V1");
     if (gripperAvailable) Serial.print(",GRIPPER_RAW_V2");
     Serial.println();
   }
@@ -955,6 +1080,16 @@ void handleCommand(String line)
     }
     moveToDegrees(targets);
   }
+  else if (line.startsWith("JOG_MOTORS"))
+  {
+    float targets[MOTOR_COUNT];
+    if (!parseMoveCommand(line, targets))
+    {
+      Serial.println("ERROR,BAD_COMMAND");
+      return;
+    }
+    moveToDegrees(targets, true);
+  }
   else
   {
     Serial.println("ERROR,UNKNOWN_COMMAND");
@@ -992,6 +1127,7 @@ void setup()
 
 void loop()
 {
+  serviceJogStream();
   if (teaching && millis() - teachingStarted >= MAX_RECORDING_MS)
     stopTeaching();
   if (teaching && millis() - lastSample >= SAMPLE_INTERVAL_MS)
@@ -1008,8 +1144,10 @@ void loop()
     char ch = (char)Serial.read();
     if (ch == '\n')
     {
-      handleCommand(rxLine);
+      String command = rxLine;
       rxLine = "";
+      serviceJogStream();
+      handleCommand(command);
     }
     else if (ch != '\r')
     {

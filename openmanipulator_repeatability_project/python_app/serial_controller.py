@@ -183,6 +183,7 @@ class OpenCRController:
             raise ControllerError("Malformed response from OpenCR") from exc
 
     def _command(self, message: str, timeout: float | None = None) -> str:
+        self._assert_motion_owner()
         with self._io_lock:
             port = self._require_serial()
             try:
@@ -466,10 +467,125 @@ class OpenCRController:
                 raise ControllerError(f"Movement failed or malformed response: {done}")
             self._verify_motor_targets(motors)
 
+    def controller_motion(self, command: str, cancelled) -> bool:
+        """Interruptible gamepad transaction; consume STOP races before reuse."""
+        self._assert_motion_owner()
+        with self._io_lock:
+            port = self._require_serial()
+            previous_timeout = port.timeout
+            stopped = False
+            acknowledged = False
+            deadline = time.monotonic() + config.MOVE_TIMEOUT_SECONDS
+            buffer = b""
+            try:
+                port.timeout = 0.05
+                if cancelled():
+                    return False
+                port.write((command + "\n").encode("ascii"))
+                while time.monotonic() < deadline:
+                    if cancelled() and not stopped:
+                        port.write(b"STOP\n")
+                        stopped = True
+                    buffer += port.readline()
+                    if b"\n" not in buffer:
+                        continue
+                    line, buffer = buffer.split(b"\n", 1)
+                    response = line.decode("ascii", errors="replace").strip()
+                    if response.startswith("ERROR"):
+                        raise ControllerError(response)
+                    if response == "MOVING":
+                        acknowledged = True
+                        continue
+                    if response in ("DONE", "STOPPED") or response.startswith("GRIPPER,"):
+                        if response == "STOPPED":
+                            return False
+                        if response == "DONE" and not acknowledged:
+                            raise ControllerError("Gamepad move missing MOVING acknowledgement")
+                        if response.startswith("GRIPPER,") and response.split(",")[1] != "DONE":
+                            raise ControllerError("Gripper contact or failure: " + response)
+                        if stopped:
+                            # STOP may have arrived just after DONE and yield IDLE.
+                            port.write(b"PING\n")
+                            sync_deadline = time.monotonic() + 2.0
+                            while time.monotonic() < sync_deadline:
+                                buffer += port.readline()
+                                if b"\n" not in buffer:
+                                    continue
+                                line, buffer = buffer.split(b"\n", 1)
+                                if line.strip() == b"OK,PONG":
+                                    return False
+                            raise ControllerError("Controller STOP synchronization failed; reconnect")
+                        return True
+                raise ControllerError("Controller movement timed out; reconnect")
+            except Exception:
+                try:
+                    port.write(b"STOP\n")
+                finally:
+                    port.close()
+                    self.status = ControllerStatus()
+                raise
+            finally:
+                if port.is_open:
+                    port.timeout = previous_timeout
+
+    def _jog_exchange(self, command: str) -> MotorAngles:
+        """One packet in flight; feedback acknowledges receipt, not arrival."""
+        self._assert_motion_owner()
+        with self._io_lock:
+            if not self.status.torque_on:
+                raise ControllerError("Cannot jog: Torque is OFF")
+            response = self._command(command, timeout=0.15)
+            fields = response.split(",")
+            if len(fields) != 5 or fields[0] != "JOG_STATE":
+                raise ControllerError("Invalid live jog feedback: " + response)
+            try:
+                motors = MotorAngles(*(raw_to_degrees(int(value)) for value in fields[1:]))
+                validate_motor_angles(motors)
+            except (ValueError, RuntimeError) as exc:
+                raise ControllerError("Invalid live jog encoder data: " + response) from exc
+            return motors
+
+    def start_jog_stream(self) -> MotorAngles:
+        return self._jog_exchange("JOG_STREAM_START")
+
+    def update_jog_stream(self, motors: MotorAngles) -> MotorAngles:
+        validate_motor_angles(motors)
+        return self._jog_exchange("JOG_STREAM,{:.3f},{:.3f},{:.3f},{:.3f}".format(
+            *motors.as_tuple()))
+
+    def stop_jog_stream(self) -> None:
+        """Hold and drain acknowledgements, including a watchdog race."""
+        self._assert_motion_owner()
+        with self._io_lock:
+            port = self._require_serial()
+            old_timeout = port.timeout
+            try:
+                port.timeout = 0.05
+                port.write(b"JOG_STREAM_STOP\nPING\n")
+                deadline = time.monotonic() + 1.0
+                stopped = False
+                buffer = b""
+                while time.monotonic() < deadline:
+                    buffer += port.readline()
+                    while b"\n" in buffer:
+                        line, buffer = buffer.split(b"\n", 1)
+                        if line.strip() == b"JOG_STOPPED":
+                            stopped = True
+                        if line.strip() == b"OK,PONG" and stopped:
+                            return
+                raise ControllerError("Live jog STOP not acknowledged; reconnect")
+            except Exception:
+                port.close()
+                self.status = ControllerStatus()
+                raise
+            finally:
+                if port.is_open:
+                    port.timeout = old_timeout
+
     def set_motion_speed(self, scale: float) -> None:
         self._assert_motion_owner()
-        if not math.isfinite(scale) or not 0.25 <= scale <= 1.0:
-            raise ValueError("Motion speed scale must be between 0.25 and 1.0")
+        if not math.isfinite(scale) or not 0.25 <= scale <= 2.0:
+            raise ValueError("Motion speed scale must be between 0.25 and 2.0")
         response = self._command(f"SET_SPEED,{scale:.3f}")
         if response != "OK,SPEED":
             raise ControllerError("Speed setting rejected. Upload the updated repeatability OpenCR sketch. Received: " + response)

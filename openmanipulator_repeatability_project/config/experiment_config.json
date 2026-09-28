@@ -53,6 +53,12 @@
       "motor_tracking_warning_deg": 2.0
     }
   },
+  "pick_place_motion": {
+    "default_speed_scale": 1.0,
+    "maximum_speed_scale": 2.0,
+    "post_grasp_settle_seconds": 0.20,
+    "post_release_settle_seconds": 0.15
+  },
   "experiment_points": [
     {"name": "P01", "x_mm": -35.0, "y_mm": 145.0, "z_mm": 0.0},
     {"name": "P02", "x_mm": 146.0, "y_mm": 145.0, "z_mm": 0.0},

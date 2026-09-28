@@ -28,6 +28,17 @@ MAX_GRIPPER_TRAVEL_RAW = 1500
 MAX_CURRENT_CUTOFF_RAW = 200
 
 
+def phase_speed(scale: float, phase: str) -> float:
+    """Full selected speed for transfer; ease contact and camera transitions."""
+    if not math.isfinite(scale) or not 0.25 <= scale <= 2.0:
+        raise ValueError("Pick/place speed must be 0.25–2.0")
+    if phase in ("LOWER_TO_PICK", "LOWER_TO_PLACE", "LIFT", "RETRACT"):
+        return min(scale, 0.65)
+    if phase in ("MOVE_TO_WORK", "ALIGN_WORK_FOR_SCAN", "RETURN_TO_SCAN"):
+        return min(scale, 0.5)
+    return scale
+
+
 @dataclass(frozen=True)
 class CubeTrial:
     source_id: str
@@ -49,7 +60,7 @@ class PickSettings:
     open_raw: int
     close_raw: int
     current_limit_raw: int
-    speed_scale: float = config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE
+    speed_scale: float = config.PICK_PLACE_DEFAULT_SPEED_SCALE
 
 
 @dataclass(frozen=True)
@@ -206,8 +217,9 @@ def check_destination_reachability(x_rear_mm: float, y_mm: float,
 def plan_pick_place(trials: tuple[CubeTrial, ...], settings: PickSettings,
                     state) -> tuple[PickStep, ...]:
     """Preflight direct goals and the firmware's interpolated joint arcs."""
-    if not 1 <= len(trials) <= 2:
-        raise ValueError("Queue one or two cubes")
+    if not trials:
+        raise ValueError("Queue at least one cube")
+    phase_speed(settings.speed_scale, "ABOVE_PICK")
     if not all(math.isfinite(value) for value in (
             settings.pick_z_mm, settings.place_z_mm, settings.travel_z_mm)):
         raise ValueError("Pick, place, and travel Z must be finite millimetres")
@@ -300,7 +312,7 @@ class PickPlacePanel(ttk.Frame):
         self.travel_z = tk.StringVar()
         self.destination_x = tk.StringVar()
         self.destination_y = tk.StringVar()
-        self.speed_scale = tk.StringVar(value=str(config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE))
+        self.speed_scale = tk.StringVar(value=str(config.PICK_PLACE_DEFAULT_SPEED_SCALE))
         self.pause_after_grasp = tk.BooleanVar(value=True)
         self.open_raw = tk.StringVar(value=str(DEFAULT_OPEN_RAW))
         self.close_raw = tk.StringVar(value=str(DEFAULT_CLOSE_RAW))
@@ -342,11 +354,14 @@ class PickPlacePanel(ttk.Frame):
         queue_box.grid(row=2, column=0, sticky="ew", pady=4)
         self.table = ttk.Treeview(queue_box, columns=("Order", "Cube", "Pick X rear", "Pick Y",
                                                       "Place X rear", "Place Y", "XY source"),
-                                  show="headings", height=3)
+                                  show="headings", height=5)
         for col in self.table["columns"]:
             self.table.heading(col, text=col)
             self.table.column(col, width=115, anchor="center", stretch=True)
         self.table.grid(row=0, column=0, columnspan=8, sticky="ew")
+        queue_scroll = ttk.Scrollbar(queue_box, orient="vertical", command=self.table.yview)
+        queue_scroll.grid(row=0, column=8, sticky="ns")
+        self.table.configure(yscrollcommand=queue_scroll.set)
         queue_box.columnconfigure(0, weight=1)
         ttk.Label(queue_box, text="Destination X rear / Y (mm):").grid(row=1, column=0, sticky="w")
         ttk.Entry(queue_box, textvariable=self.destination_x, width=9).grid(row=1, column=1)
@@ -360,9 +375,16 @@ class PickPlacePanel(ttk.Frame):
         for col, label, variable in ((0, "Pick TCP Z (mm)", self.pick_z),
                                      (2, "Place TCP Z (mm)", self.place_z),
                                      (4, "Travel TCP Z (mm)", self.travel_z),
-                                     (6, f"Speed (0.25–{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:g})", self.speed_scale)):
+                                     (6, f"Speed (0.25–{config.PICK_PLACE_MAXIMUM_SPEED_SCALE:g})", self.speed_scale)):
             ttk.Label(heights, text=label).grid(row=0, column=col, sticky="w", padx=3)
-            ttk.Entry(heights, textvariable=variable, width=9).grid(row=0, column=col + 1, padx=3)
+            if col != 6:
+                ttk.Entry(heights, textvariable=variable, width=9).grid(row=0, column=col + 1, padx=3)
+        ttk.Spinbox(heights, from_=0.25, to=2.0, increment=0.1,
+                    textvariable=self.speed_scale, width=9).grid(row=0, column=7, padx=3)
+        ttk.Label(heights, text="1× normal; 2× faster travel. Contact moves stay slower. Travel Z is editable.").grid(
+            row=1, column=0, columnspan=6, sticky="w", pady=4)
+        ttk.Button(heights, text="CHECK DESTINATION", command=self.check_destination).grid(
+            row=1, column=6, columnspan=2, padx=3)
 
         grip = ttk.LabelFrame(body, text="3  ID15 gripper calibration — RAW encoder counts", padding=6)
         grip.grid(row=4, column=0, sticky="ew", pady=4)
@@ -407,8 +429,8 @@ class PickPlacePanel(ttk.Frame):
 
     def add_cube(self) -> None:
         try:
-            if self.running or len(self.queue) >= 2:
-                raise ValueError("Stop the experiment first; at most two cubes can be queued")
+            if self.running:
+                raise ValueError("Stop the experiment before editing the queue")
             x, y = float(self.destination_x.get()), float(self.destination_y.get())
             if not math.isfinite(x) or not math.isfinite(y):
                 raise ValueError("Destination X/Y must be finite millimetres")
@@ -535,6 +557,9 @@ class PickPlacePanel(ttk.Frame):
 
         ttk.Label(z_box, text="Travel TCP Z (mm):").grid(row=1, column=0, sticky="w", padx=4, pady=(6, 2))
         ttk.Entry(z_box, textvariable=var_tz, width=10).grid(row=1, column=1, sticky="w", padx=4, pady=(6, 2))
+        ttk.Label(z_box, text="Speed (1× normal):").grid(row=1, column=2, padx=4, pady=6)
+        ttk.Spinbox(z_box, from_=0.25, to=2.0, increment=0.1,
+                    textvariable=self.speed_scale, width=10).grid(row=1, column=3, padx=4)
 
         work_z = forward_kinematics_physical(MotorAngles(*config.WORK_MOTOR_DEGREES)).z
         ttk.Label(
@@ -633,12 +658,6 @@ class PickPlacePanel(ttk.Frame):
             )
             if nearby_idx is not None:
                 self.queue[nearby_idx] = trial
-            elif len(self.queue) >= 2:
-                if messagebox.askyesno("Queue Full", "Pick queue already has 2 cubes. Replace the queue with this cube?", parent=dialog):
-                    self.queue.clear()
-                    self.queue.append(trial)
-                else:
-                    return
             else:
                 self.queue.append(trial)
 
@@ -691,6 +710,23 @@ class PickPlacePanel(ttk.Frame):
         ttk.Button(btn_box, text="Queue & Go to Tab", command=_on_queue).pack(side="left", padx=4)
         ttk.Button(btn_box, text="Cancel", command=dialog.destroy).pack(side="right", padx=4)
 
+    def check_destination(self) -> None:
+        """Report reachability without changing coordinates or commanding motion."""
+        try:
+            x, y = float(self.destination_x.get()), float(self.destination_y.get())
+            place, travel = float(self.place_z.get()), float(self.travel_z.get())
+            if not all(math.isfinite(v) for v in (x, y, place, travel)):
+                raise ValueError("Enter finite destination X/Y and place/travel Z")
+            check_destination_reachability(x, y, place, travel)
+            ranges = _format_z_intervals(sampled_reachable_z_intervals(
+                rear_to_axis_xyz(XYZ(x, y, 0)).x, y))
+            messagebox.showinfo("Destination check",
+                f"X={x:g}, Y={y:g}: place Z={place:g} and travel Z={travel:g} have IK solutions.\n"
+                f"Sampled reachable heights: {ranges} mm.\n"
+                "Use PREVIEW PATH to check the complete route before running.")
+        except (ValueError, KinematicsError) as exc:
+            messagebox.showerror("Destination check", str(exc))
+
     def _settings(self) -> PickSettings:
         try:
             spd_text = self.speed_scale.get().strip().split()[0]
@@ -701,9 +737,11 @@ class PickPlacePanel(ttk.Frame):
                 float(spd_text)
             )
         except ValueError as exc:
-            raise ValueError("Enter numeric measured Z, integer ID15 RAW values, and speed (0.25–1.0)") from exc
-        if not (0.25 <= settings.speed_scale <= config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE):
-            raise ValueError(f"Camera-loaded speed must be 0.25–{config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE:g}")
+            raise ValueError("Enter numeric measured Z, integer ID15 RAW values, and speed (0.25–2.0)") from exc
+        if not (0.25 <= settings.speed_scale <= config.PICK_PLACE_MAXIMUM_SPEED_SCALE):
+            raise ValueError(
+                f"Pick/place speed must be 0.25–{config.PICK_PLACE_MAXIMUM_SPEED_SCALE:g}"
+            )
         if not OPEN_BAND_MIN_RAW <= settings.open_raw <= OPEN_BAND_MAX_RAW:
             raise ValueError("Open target must be in the firmware 1250–2200 RAW range")
         if not 2000 <= settings.close_raw <= 2700 or not 0 < settings.close_raw - settings.open_raw <= MAX_GRIPPER_TRAVEL_RAW:
@@ -723,7 +761,7 @@ class PickPlacePanel(ttk.Frame):
             raise ControllerError("Connect and turn torque ON before running")
         self.controller.require_gripper_capability()
         if not self.queue:
-            raise ValueError("Add one or two camera-detected cubes")
+            raise ValueError("Add at least one camera-detected cube")
         settings = self._settings()
         state = self.controller.read_robot_state()
         work = MotorAngles(*config.WORK_MOTOR_DEGREES)
@@ -867,6 +905,8 @@ class PickPlacePanel(ttk.Frame):
                 if self.stop_requested.is_set():
                     raise ControllerError("Stopped by operator")
                 trial = trials[step.cube_index - 1]
+                if step.motors or step.phase in ("MOVE_TO_WORK", "ALIGN_WORK_FOR_SCAN", "RETURN_TO_SCAN"):
+                    self.controller.set_motion_speed(phase_speed(settings.speed_scale, step.phase))
                 self._post(f"Cube {step.cube_index}/{len(trials)}: {step.phase}")
                 if step.phase == "OPEN_BEFORE_PICK":
                     current = self.controller.read_gripper_raw()
@@ -922,11 +962,11 @@ class PickPlacePanel(ttk.Frame):
                     else:
                         self._post(f"GRASPED cube {step.cube_index}: ID15 {outcome} "
                                    f"at RAW {position_raw}. Continuing lift...")
-                        time.sleep(0.35)
+                        time.sleep(config.PICK_PLACE_POST_GRASP_SETTLE_SECONDS)
                 elif step.phase == "RELEASE":
                     result = self._move_gripper(
                         settings.open_raw, settings.current_limit_raw)
-                    time.sleep(0.25)
+                    time.sleep(config.PICK_PLACE_POST_RELEASE_SETTLE_SECONDS)
                     verified = self.controller.read_gripper_raw()
                     if result.outcome != "DONE" or abs(verified - settings.open_raw) > OPEN_TARGET_TOLERANCE_RAW:
                         raise ControllerError(f"ID15 did not reach release opening {settings.open_raw}: RAW {verified}")

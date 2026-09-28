@@ -12,6 +12,7 @@ import config
 from experiment_frame import forward_kinematics_physical
 from kinematics import MotorAngles, motor_to_fk_angles, forward_kinematics
 from pick_place_panel import (CubeTrial, PickSettings, PickPlacePanel,
+                              phase_speed,
                               check_destination_reachability,
                               format_arm_target_readback, plan_pick_place)
 from serial_controller import ControllerError, RobotState
@@ -38,7 +39,11 @@ class TestPickPlace(unittest.TestCase):
             close_raw=2650,
             current_limit_raw=200,
         )
-        self.assertEqual(settings.speed_scale, config.CAMERA_PAYLOAD_MAXIMUM_SPEED_SCALE)
+        self.assertEqual(settings.speed_scale, config.PICK_PLACE_DEFAULT_SPEED_SCALE)
+        self.assertLessEqual(
+            config.PICK_PLACE_DEFAULT_SPEED_SCALE,
+            config.PICK_PLACE_MAXIMUM_SPEED_SCALE,
+        )
 
         custom_settings = PickSettings(
             pick_z_mm=10.0,
@@ -136,6 +141,27 @@ class TestPickPlace(unittest.TestCase):
 
     def test_quick_pick_dialog_interface(self):
         self.assertTrue(hasattr(PickPlacePanel, "quick_pick_dialog"))
+
+    def test_five_cube_queue_and_travel_60_70(self):
+        for z in (60.0, 70.0):
+            trials = tuple(CubeTrial(f"cube_{i}", 220.0 + i * 10, -50.0,
+                                    110.0, 100.0, 0, 0, "FIXED_POSE", "")
+                           for i in range(5))
+            check_destination_reachability(110.0, 100.0, 5.0, z)
+            plan = plan_pick_place(trials, PickSettings(0, 5, z, 1800, 2650, 200, 2.0),
+                                   self.planning_state)
+            self.assertEqual(sum(step.phase == "CLOSE_AND_CONFIRM" for step in plan), 5)
+            self.assertEqual(sum(step.phase == "RELEASE" for step in plan), 5)
+            self.assertEqual(plan[-1].cube_index, 5)
+
+    def test_contact_phases_remain_slower_than_transfer(self):
+        self.assertEqual(phase_speed(2.0, "ABOVE_PLACE"), 2.0)
+        self.assertEqual(phase_speed(2.0, "LOWER_TO_PICK"), 0.65)
+        self.assertEqual(phase_speed(2.0, "MOVE_TO_WORK"), 0.5)
+        self.assertEqual(phase_speed(0.25, "LOWER_TO_PLACE"), 0.25)
+        for speed in (float("nan"), 2.1, 0):
+            with self.assertRaises(ValueError):
+                phase_speed(speed, "ABOVE_PICK")
 
     def test_side_destination_reachability_uses_rear_frame(self):
         with self.assertRaisesRegex(ValueError, "X is already inside the configured software X range"):
