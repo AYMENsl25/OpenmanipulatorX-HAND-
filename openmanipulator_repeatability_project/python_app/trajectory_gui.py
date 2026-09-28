@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 import threading
 import time
@@ -10,8 +11,12 @@ import tkinter as tk
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
 
+import cv2
 import config
+from app_paths import PROJECT_ROOT, ASSET_ROOT
 from experiment_logging import ExperimentLogger, new_session_id
+from gamepad_panel import GamepadPanel
+from keyboard_panel import KeyboardPanel
 from experiment_frame import (
     experiment_points,
     forward_kinematics_physical,
@@ -62,9 +67,21 @@ from trajectory import (
 from vision_panel import VisionPanel
 
 
+PROJECT_NAME = "OpenMANIPULATOR-X Vision-Guided Pick & Place"
+PROJECT_SUBTITLE = "Camera localization • Cartesian control • Repeatability experiments"
+BRAND_BLUE = "#087FAA"
+BRAND_BLUE_DARK = "#065F82"
+BRAND_CYAN = "#28C4D8"
+BRAND_MAGENTA = "#E64091"
+APP_BACKGROUND = "#EEF3F7"
+CARD_BACKGROUND = "#FFFFFF"
+TEXT_DARK = "#17324D"
+TEXT_MUTED = "#5F7182"
+
+
 class TrajectoryGUI(ttk.Frame):
     def __init__(self, master: tk.Tk) -> None:
-        super().__init__(master, padding=12)
+        super().__init__(master, padding=10, style="App.TFrame")
         self.controller = OpenCRController()
         self.port = tk.StringVar()
         self.torque = tk.StringVar(value="UNKNOWN")
@@ -144,7 +161,9 @@ class TrajectoryGUI(ttk.Frame):
         self.repeatability_dashboard_tab: ttk.Frame | None = None
         self.vision_panel: VisionPanel | None = None
         self.pick_place_panel: PickPlacePanel | None = None
-        self.output_dir = Path(__file__).resolve().parents[1]
+        self.gamepad_panel: GamepadPanel | None = None
+        self.keyboard_panel: KeyboardPanel | None = None
+        self.output_dir = PROJECT_ROOT
         self.logger = ExperimentLogger(project_root=self.output_dir)
         self._experiment_plan: ExperimentPlan | None = None
         self._experiment_running = False
@@ -165,24 +184,118 @@ class TrajectoryGUI(ttk.Frame):
 
     def _configure_styles(self) -> None:
         style = ttk.Style(self.master)
-        style.configure("Title.TLabel", font=("TkDefaultFont", 16, "bold"))
-        style.configure("Subtitle.TLabel", foreground="#4b5563")
-        style.configure("State.TLabel", font=("TkDefaultFont", 9, "bold"), padding=(8, 4))
-        style.configure("Primary.TButton", font=("TkDefaultFont", 9, "bold"))
-        style.configure("Danger.TButton", font=("TkDefaultFont", 9, "bold"))
-        style.configure("Status.TLabel", padding=(8, 5), relief="sunken")
+        try:
+            style.theme_use("clam")
+        except tk.TclError:
+            pass
+        self.master.configure(background=APP_BACKGROUND)
+        style.configure("App.TFrame", background=APP_BACKGROUND)
+        style.configure("TFrame", background=APP_BACKGROUND)
+        style.configure("TLabelframe", background=CARD_BACKGROUND, bordercolor="#CBD8E2")
+        style.configure("TLabelframe.Label", background=APP_BACKGROUND,
+                        foreground=TEXT_DARK, font=("Segoe UI", 9, "bold"))
+        style.configure("TLabel", background=APP_BACKGROUND, foreground=TEXT_DARK,
+                        font=("Segoe UI", 9))
+        style.configure("Subtitle.TLabel", foreground=TEXT_MUTED)
+        style.configure("State.TLabel", foreground=BRAND_BLUE_DARK,
+                        font=("Segoe UI", 9, "bold"), padding=(8, 4))
+        style.configure("TButton", font=("Segoe UI", 9), padding=(9, 5))
+        style.configure("Primary.TButton", background=BRAND_BLUE, foreground="white",
+                        font=("Segoe UI", 9, "bold"), padding=(9, 5))
+        style.map("Primary.TButton", background=[("active", BRAND_BLUE_DARK)])
+        style.configure("Danger.TButton", background="#C92A3A", foreground="white",
+                        font=("Segoe UI", 9, "bold"), padding=(9, 5))
+        style.map("Danger.TButton", background=[("active", "#A91F2E")])
+        style.configure("TNotebook", background=APP_BACKGROUND, borderwidth=0)
+        style.configure("TNotebook.Tab", font=("Segoe UI", 9, "bold"),
+                        padding=(14, 8), foreground=TEXT_MUTED)
+        style.map("TNotebook.Tab",
+                  background=[("selected", CARD_BACKGROUND), ("active", "#DCEAF1")],
+                  foreground=[("selected", BRAND_BLUE_DARK), ("active", TEXT_DARK)])
+        style.configure("Status.TLabel", background=CARD_BACKGROUND, foreground=TEXT_DARK,
+                        padding=(10, 7), relief="solid", borderwidth=1)
 
-    def _header(self) -> ttk.Frame:
-        frame = ttk.Frame(self)
-        frame.columnconfigure(0, weight=1)
-        ttk.Label(frame, text="OpenMANIPULATOR-X Lab Controller", style="Title.TLabel").grid(row=0, column=0, sticky="w")
-        ttk.Label(frame, text="Teach, validate, run Cartesian experiments and inspect repeatability", style="Subtitle.TLabel").grid(row=1, column=0, sticky="w")
-        ttk.Label(frame, text="Connection:").grid(row=0, column=1, sticky="e", padx=(10, 2))
-        ttk.Label(frame, textvariable=self.connection_state, style="State.TLabel").grid(row=0, column=2, sticky="e")
-        ttk.Label(frame, text="Torque:").grid(row=1, column=1, sticky="e", padx=(10, 2))
-        ttk.Label(frame, textvariable=self.torque, style="State.TLabel").grid(row=1, column=2, sticky="e")
-        ttk.Button(frame, text="Quick Help", command=self._show_quick_help).grid(row=0, column=3, rowspan=2, padx=(12, 0), sticky="ns")
-        return frame
+    def _load_brand_logo(self) -> tk.PhotoImage | None:
+        """Load the supplied ISU XR Lab artwork and crop away its caption."""
+        logo_path = ASSET_ROOT / "isu_xr_lab_logo.png"
+        try:
+            self._logo_source = tk.PhotoImage(master=self.master, file=str(logo_path))
+            crop_width = min(180, self._logo_source.width())
+            crop_height = min(180, self._logo_source.height())
+            self._logo_crop = tk.PhotoImage(
+                master=self.master, width=crop_width, height=crop_height)
+            self._logo_crop.tk.call(
+                str(self._logo_crop), "copy", str(self._logo_source),
+                "-from", 0, 0, crop_width, crop_height, "-to", 0, 0)
+            # The final reference uses an 80 px square logo. Tk's integer
+            # zoom/subsample keeps the supplied artwork unchanged while
+            # producing exactly 80 px from the 180 px source crop.
+            divisor = math.gcd(crop_width, 80)
+            zoom = max(1, 80 // divisor)
+            subsample = max(1, crop_width // divisor)
+            self._logo_image = self._logo_crop.zoom(zoom, zoom).subsample(
+                subsample, subsample)
+            self.master.iconphoto(True, self._logo_image)
+            return self._logo_image
+        except (tk.TclError, OSError):
+            return None
+
+    def _load_header_artwork(self):
+        """Load the exact supplied header file and isolate its colored band."""
+        image_path = ASSET_ROOT / "isu_xr_lab_header.png"
+        source = cv2.imread(str(image_path), cv2.IMREAD_COLOR)
+        if source is None:
+            return None
+        saturation = cv2.cvtColor(source, cv2.COLOR_BGR2HSV)[:, :, 1]
+        colored_rows = (saturation > 60).mean(axis=1) > 0.50
+        indices = colored_rows.nonzero()[0]
+        if not len(indices):
+            return source
+        return source[int(indices[0]):int(indices[-1]) + 1]
+
+    def _render_header_artwork(self, width: int) -> None:
+        if self._header_artwork is None or width < 2:
+            return
+        if width == getattr(self, "_header_render_width", None):
+            return
+        source_height, source_width = self._header_artwork.shape[:2]
+        height = max(78, round(width * source_height / source_width))
+        resized = cv2.resize(self._header_artwork, (width, height),
+                             interpolation=cv2.INTER_AREA)
+        ok, encoded = cv2.imencode(".png", resized)
+        if not ok:
+            return
+        self._header_photo = tk.PhotoImage(
+            master=self.master,
+            data=base64.b64encode(encoded.tobytes()).decode("ascii"))
+        self._header_canvas.configure(height=height)
+        self._header_canvas.itemconfigure(self._header_image_item,
+                                          image=self._header_photo)
+        self._header_canvas.coords(self._header_image_item, 0, 0)
+        self._header_render_width = width
+
+    def _header(self) -> tk.Canvas:
+        # Keep the exact supplied logo as the window icon as well.
+        self._load_brand_logo()
+        self._header_artwork = self._load_header_artwork()
+        canvas = tk.Canvas(self, background=BRAND_BLUE, height=102,
+                           highlightthickness=0, borderwidth=0)
+        self._header_canvas = canvas
+        self._header_image_item = canvas.create_image(0, 0, anchor="nw")
+
+        # The source image contains example status words. These two live labels
+        # cover that small area and continue to reflect the actual controller.
+        connection = tk.Label(canvas, textvariable=self.connection_state,
+                              background="#08769A", foreground="white",
+                              padx=7, pady=1, font=("Segoe UI", 8, "bold"))
+        connection.place(relx=0.761, rely=0.49, anchor="center")
+        torque = tk.Label(canvas, textvariable=self.torque,
+                          background="#08769A", foreground="white",
+                          padx=10, pady=1, font=("Segoe UI", 8, "bold"))
+        torque.place(relx=0.761, rely=0.72, anchor="center")
+        canvas.bind("<Configure>",
+                    lambda event: self._render_header_artwork(event.width))
+        return canvas
 
     def _build(self) -> None:
         self.grid(sticky="nsew")
@@ -190,7 +303,7 @@ class TrajectoryGUI(ttk.Frame):
         self.master.columnconfigure(0, weight=1)
         self.rowconfigure(2, weight=1)
         self.columnconfigure(0, weight=1)
-        self._header().grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        self._header().grid(row=0, column=0, sticky="ew", pady=(0, 10))
         self._connection().grid(row=1, column=0, sticky="ew", pady=(0, 8))
 
         notebook = ttk.Notebook(self)
@@ -202,15 +315,19 @@ class TrajectoryGUI(ttk.Frame):
         log_tab = ttk.Frame(notebook, padding=6)
         vision_tab = ttk.Frame(notebook, padding=6)
         pick_tab = ttk.Frame(notebook, padding=6)
+        gamepad_tab = ttk.Frame(notebook, padding=6)
+        keyboard_tab = ttk.Frame(notebook, padding=6)
         self.pick_tab = pick_tab
-        for tab in (control_tab, experiment_tab, log_tab, vision_tab, pick_tab):
+        for tab in (control_tab, experiment_tab, log_tab, vision_tab, pick_tab, keyboard_tab, gamepad_tab):
             tab.rowconfigure(0, weight=1)
             tab.columnconfigure(0, weight=1)
-        notebook.add(control_tab, text="1  Teach and Cartesian Control")
-        notebook.add(experiment_tab, text="2  Point and Repeatability Experiment")
+        notebook.add(control_tab, text="1  Robot Control")
+        notebook.add(experiment_tab, text="2  Experiments")
         notebook.add(log_tab, text="3  Session Log")
-        notebook.add(vision_tab, text="4  Live Camera and Scan Preview")
-        notebook.add(pick_tab, text="5  Camera Pick and Place")
+        notebook.add(vision_tab, text="4  Camera & Scan")
+        notebook.add(pick_tab, text="5  Pick & Place")
+        notebook.add(keyboard_tab, text="6  Keyboard")
+        notebook.add(gamepad_tab, text="7  Controller")
 
         upper = ttk.Panedwindow(control_tab, orient=tk.HORIZONTAL)
         upper.grid(row=0, column=0, sticky="nsew")
@@ -245,6 +362,23 @@ class TrajectoryGUI(ttk.Frame):
                                    else "Cartesian playback" if self.playback.get() == "ON"
                                    else None))
         self.pick_place_panel.grid(row=0, column=0, sticky="nsew")
+        self.gamepad_panel = GamepadPanel(gamepad_tab, controller=self.controller,
+            log_callback=self._log,
+            move_work_callback=self.work,
+            busy_callback=lambda: ("point/repeatability run" if self._experiment_running
+                else "Cartesian playback" if self.playback.get() == "ON"
+                else "pick/place" if self.pick_place_panel and self.pick_place_panel.running
+                else "keyboard jogging" if self.keyboard_panel and self.keyboard_panel.running
+                else None))
+        self.gamepad_panel.grid(row=0, column=0, sticky="nsew")
+        self.keyboard_panel = KeyboardPanel(keyboard_tab, controller=self.controller,
+            log_callback=self._log, move_work_callback=self.work,
+            busy_callback=lambda: ("point/repeatability run" if self._experiment_running
+                else "Cartesian playback" if self.playback.get() == "ON"
+                else "pick/place" if self.pick_place_panel and self.pick_place_panel.running
+                else "gamepad jogging" if self.gamepad_panel and self.gamepad_panel.running
+                else None))
+        self.keyboard_panel.grid(row=0, column=0, sticky="nsew")
         ttk.Label(self, textvariable=self.status, style="Status.TLabel", anchor="w").grid(row=3, column=0, sticky="ew", pady=(6, 0))
 
     def _quick_pick_from_camera(self) -> None:
@@ -271,7 +405,7 @@ class TrajectoryGUI(ttk.Frame):
         return frame
 
     def _connection(self) -> ttk.LabelFrame:
-        frame = self._frame("OpenCR connection and safe poses")
+        frame = self._frame("OPENCR CONNECTION & SAFE POSES")
         for column in (1, 3, 4, 5, 6, 7, 8):
             frame.columnconfigure(column, weight=1)
         ttk.Label(frame, text="Port").grid(row=0, column=0, sticky="w")
@@ -288,6 +422,8 @@ class TrajectoryGUI(ttk.Frame):
         ttk.Button(frame, text="Read once", command=self.read_angles_now).grid(row=1, column=6, sticky="ew", padx=3, pady=(6, 0))
         ttk.Button(frame, text="Start live read", command=self.start_live_read).grid(row=1, column=7, sticky="ew", padx=3, pady=(6, 0))
         ttk.Button(frame, text="Stop live read", command=self.stop_live_read).grid(row=1, column=8, sticky="ew", padx=3, pady=(6, 0))
+        ttk.Button(frame, text="Quick help", command=self._show_quick_help).grid(
+            row=0, column=8, sticky="ew", padx=3)
         ttk.Label(frame, text="Interval ms").grid(row=1, column=0, sticky="w", pady=(6, 0))
         ttk.Entry(frame, textvariable=self.live_interval_ms, width=8).grid(row=1, column=1, sticky="w", padx=(4, 8), pady=(6, 0))
         ttk.Label(frame, textvariable=self.live_read_status, style="State.TLabel").grid(row=1, column=2, sticky="w", pady=(6, 0))
@@ -1814,6 +1950,16 @@ class TrajectoryGUI(ttk.Frame):
             self._error(exc)
 
     def disconnect(self) -> None:
+        if self.keyboard_panel is not None:
+            self.keyboard_panel.disarm()
+            if self.keyboard_panel.running:
+                self._log("Keyboard STOP requested; wait for movement to stop before disconnecting")
+                return
+        if self.gamepad_panel is not None:
+            self.gamepad_panel.disarm()
+            if self.gamepad_panel.running:
+                self._log("Gamepad STOP requested; wait for movement to stop before disconnecting")
+                return
         if self.pick_place_panel is not None and self.pick_place_panel.running:
             self.pick_place_panel.stop()
             self._log("Pick/place STOP requested; wait for the worker to stop before disconnecting")
@@ -1825,6 +1971,19 @@ class TrajectoryGUI(ttk.Frame):
         self._log("Disconnected")
 
     def _close(self) -> None:
+        if self.keyboard_panel is not None:
+            if self.keyboard_panel.running:
+                self.keyboard_panel.disarm()
+                self._log("Keyboard STOP requested; wait for movement to stop, then close")
+                return
+            self.keyboard_panel.close()
+        if self.gamepad_panel is not None:
+            if self.gamepad_panel.running:
+                self.gamepad_panel.disarm()
+                messagebox.showwarning("Controller stopping",
+                    "STOP requested. Wait until controller movement stops, then close.")
+                return
+            self.gamepad_panel.close()
         if self.pick_place_panel is not None and self.pick_place_panel.running:
             self.pick_place_panel.stop()
             messagebox.showwarning("Pick/place stopping",
@@ -2064,8 +2223,8 @@ class TrajectoryGUI(ttk.Frame):
 
 def run() -> None:
     root = tk.Tk()
-    root.title("OpenMANIPULATOR-X Cartesian and Repeatability Lab")
-    root.geometry("950x780")
-    root.minsize(680, 550)
+    root.title(f"ISU XR LAB — {PROJECT_NAME}")
+    root.geometry("1280x840")
+    root.minsize(900, 650)
     TrajectoryGUI(root)
     root.mainloop()

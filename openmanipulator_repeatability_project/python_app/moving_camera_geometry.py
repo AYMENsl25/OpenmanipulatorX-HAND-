@@ -13,7 +13,8 @@ from experiment_frame import internal_to_physical, physical_to_internal
 from kinematics import JointAngles, XYZ, forward_kinematics_official_pose_from_joints
 
 
-DEFAULT_CALIBRATION = Path(__file__).resolve().parents[2] / "data" / "vision_calibration" / "moving_camera.json"
+from app_paths import WORKSPACE_ROOT
+DEFAULT_CALIBRATION = WORKSPACE_ROOT / "data" / "vision_calibration" / "moving_camera.json"
 
 
 class GeometryUnavailable(ValueError):

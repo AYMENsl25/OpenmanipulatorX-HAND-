@@ -16,7 +16,8 @@ from tkinter import messagebox, ttk
 import cv2
 import config
 
-ROOT = Path(__file__).resolve().parents[2]
+from app_paths import WORKSPACE_ROOT
+ROOT = WORKSPACE_ROOT
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
