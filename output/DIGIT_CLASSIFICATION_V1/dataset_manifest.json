@@ -1,0 +1,53 @@
+{
+  "dataset_name": "DIGIT_CLASSIFICATION_V1",
+  "creation_date": "2026-10-02",
+  "seed": 42,
+  "svhn_paths": {
+    "zip": "<local Downloads>/SVHN number dataset.zip"
+  },
+  "printed_digit_paths": {
+    "root": "<local Downloads>/Printed-Digit-Detection.v2i.yolo26",
+    "yaml": "<local Downloads>/Printed-Digit-Detection.v2i.yolo26/data.yaml"
+  },
+  "crop_padding": 0.15,
+  "minimum_crop_size": [
+    8,
+    8
+  ],
+  "svhn_extra_configuration": {
+    "use": true,
+    "max_source_images": 100000
+  },
+  "total_images": 146843,
+  "total_crops": 357793,
+  "full_validation_status": "skipped at user request; final image-by-image scan incomplete",
+  "split_counts": {
+    "train": 325090,
+    "val": 6950,
+    "test": 25753
+  },
+  "class_counts": {
+    "0": 29003,
+    "1": 61097,
+    "2": 51429,
+    "3": 41288,
+    "4": 34610,
+    "5": 35557,
+    "6": 28147,
+    "7": 29300,
+    "8": 24143,
+    "9": 23219
+  },
+  "source_counts": {
+    "SVHN": 357396,
+    "Printed": 397
+  },
+  "quarantine_counts": {
+    "tiny_crop": 4032
+  },
+  "exact_duplicate_pairs": {
+    "('train', 'train')": 1
+  },
+  "missing_files": [],
+  "annotation_issues": []
+}

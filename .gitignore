@@ -12,3 +12,8 @@ tmp*/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+/digit_model_experiments_output/
+/output/DIGIT_CLASSIFICATION_V1/*
+!/output/DIGIT_CLASSIFICATION_V1/class_distribution.csv
+!/output/DIGIT_CLASSIFICATION_V1/dataset_manifest.json
+!/output/DIGIT_CLASSIFICATION_V1/dataset_report.md
