@@ -20,7 +20,12 @@ tmp*/
 /digit_model_experiments/*.zip
 /digit_model_experiments/results/rotation_v2/yolo_config/
 /dataset/*.zip
-/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/
+/digit_classification_dataset/*.zip
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/train/
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/val/
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/test/
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/quarantine/
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/metadata.csv
 /digit_model_experiments_output/
 /output/DIGIT_CLASSIFICATION_V1/*
 !/output/DIGIT_CLASSIFICATION_V1/class_distribution.csv
