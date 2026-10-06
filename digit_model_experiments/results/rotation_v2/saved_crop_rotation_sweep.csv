@@ -1,0 +1,13 @@
+crop_file,rotation_ccw_degrees,true_digit,mobile_prediction,mobile_confidence,mobile_ms,resnet_prediction,resnet_confidence,resnet_ms
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043045_030534_cube1_digit.png,0,,1,0.977772,66.74,1,0.954547,76.57
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043045_030534_cube1_digit.png,90,,1,0.993916,37.16,1,0.991229,68.44
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043045_030534_cube1_digit.png,180,,1,0.995480,37.86,1,0.981624,67.28
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043045_030534_cube1_digit.png,270,,1,0.982262,39.21,1,0.995164,67.73
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043055_854856_cube1_digit.png,0,,1,0.981214,40.29,1,0.982519,76.50
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043055_854856_cube1_digit.png,90,,1,0.668939,41.17,1,0.980369,82.95
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043055_854856_cube1_digit.png,180,,1,0.948694,39.39,1,0.994666,70.04
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043055_854856_cube1_digit.png,270,,1,0.836295,36.71,1,0.989654,64.22
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043108_091606_cube1_digit.png,0,,1,0.971959,40.94,1,0.996966,68.21
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043108_091606_cube1_digit.png,90,,1,0.717132,38.25,1,0.896025,65.36
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043108_091606_cube1_digit.png,180,,1,0.805639,42.79,1,0.922183,68.71
+C:\Users\msi\Downloads\The Robotic Hand ISU XR LAB\digit_model_experiments\camera_tests\yolo_digit\20261005_043108_091606_cube1_digit.png,270,,1,0.867079,41.80,1,0.980411,69.33

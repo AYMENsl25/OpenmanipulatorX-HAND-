@@ -1,0 +1,25 @@
+{
+  "source_archive": "digit_model_experiments\\results version 2 rotation traniing.zip",
+  "files": {
+    "digit_model_experiments\\checkpoints\\rotation_v2\\mobilenetv3_small\\best.pt": {
+      "bytes": 6235817,
+      "sha256": "8ede0feaf6a3844bdedd83c8a7f34f5ca0159ef793e16737998bfa1c22ebb5fa"
+    },
+    "digit_model_experiments\\checkpoints\\rotation_v2\\resnet18\\best.pt": {
+      "bytes": 44799243,
+      "sha256": "b73ad53cc6e4debc80ff8f14450940918a49e11e89cc6fbd0d5682efc0737f6c"
+    },
+    "digit_model_experiments\\results\\rotation_v2\\rotation_validation_summary.csv": {
+      "bytes": 222,
+      "sha256": "5f094c38121f2eb10cdd8db0511875e69c5537dbff1179074140f1f29c3f43a2"
+    },
+    "digit_model_experiments\\results\\rotation_v2\\mobilenetv3_small_history.csv": {
+      "bytes": 4630,
+      "sha256": "6e68bab744b7cb0f5b0975b1d58a4444379b9c8010b2b2ed804979032397711a"
+    },
+    "digit_model_experiments\\results\\rotation_v2\\resnet18_history.csv": {
+      "bytes": 6110,
+      "sha256": "797f58e0ac9ed0b1d0963e2dbb4d95b08fa1af058ddea454ac8b0acbdc3d2007"
+    }
+  }
+}
