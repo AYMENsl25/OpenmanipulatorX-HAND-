@@ -56,6 +56,7 @@ INPUT_SIZE = 128                 # 96, 128, or 160 may be tested in a later expe
 BATCH_SIZE = 128                 # lower to 64 or 32 if CUDA reports out of memory
 NUM_WORKERS = min(4, os.cpu_count() or 1)
 SMOKE_TEST = True               # set False for the final full-data run
+ROTATION_EXPERIMENT = False     # True in digit_rotation_experiment.ipynb
 MODELS_TO_RUN = ["CNN_FROM_SCRATCH", "MOBILENETV3_SMALL", "RESNET18"]
 RUN_FINAL_EVALUATION = True      # False for a single-model training session
 EXTERNAL_CHECKPOINT_ROOTS = []   # Path('/kaggle/input/prior-run/digit_model_experiments'), etc.
@@ -69,7 +70,8 @@ EVALUATE_TEST = (not SMOKE_TEST) and RUN_FINAL_EVALUATION
 PREFLIGHT_SCAN_LIMIT = 2000
 DATASET_ROOT_OVERRIDE = None    # e.g. Path('/kaggle/input/my-dataset/DIGIT_CLASSIFICATION_V1')
 DATASET_ZIP_OVERRIDE = None     # e.g. Path('/kaggle/input/my-dataset/DIGIT_CLASSIFICATION_V1.zip')
-OUTPUT_ROOT = Path('/kaggle/working/digit_model_experiments') if Path('/kaggle/working').exists() else Path('digit_model_experiments_output')
+OUTPUT_NAME = 'digit_rotation_experiment' if ROTATION_EXPERIMENT else 'digit_model_experiments'
+OUTPUT_ROOT = Path('/kaggle/working') / OUTPUT_NAME if Path('/kaggle/working').exists() else Path(OUTPUT_NAME + '_output')
 OUTPUT_ROOT.mkdir(parents=True, exist_ok=True)
 
 random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
@@ -278,6 +280,36 @@ md("""## 2. Input processing and loaders
 Every image is converted to RGB, padded to a centered square with its median border color, then resized to 128×128. Moderate augmentation is applied only to train. There are no flips or 180° rotations. ImageNet normalization is used for both pretrained models; the scratch CNN uses fixed RGB mean/std of 0.5 for a transparent baseline.
 """)
 
+md("""### Optional full rotation experiment for numbered cubes
+
+The separate `digit_rotation_experiment.ipynb` enables this cell. On **training images only**, digits 1–5 receive a random in-plane rotation from -180° to +180°. The canvas expands before resizing so diagonal digits are not cut off. Digits 6 and 9 retain the original small rotation because rotating them can change their identity without an orientation mark. A fixed-angle subset of the existing validation split is used alongside upright validation to select checkpoints. The held-out test split remains untouched. This is a public-data rotation experiment; it cannot establish performance on the robot camera without a labeled real-camera test set. The baseline notebook keeps this switch off.
+""")
+
+code("""
+ROTATION_AUGMENT_CLASSES = frozenset({1, 2, 3, 4, 5})
+EXTRA_ROTATION_DEGREES = 180
+ROTATED_VAL_ANGLES = (45, 90, 135, 180, 225, 270, 315)
+ROTATED_VAL_PER_CLASS = 30
+
+
+def rotate_on_expanded_canvas(image, angle):
+    square = pad_square(image)
+    fill = square.getpixel((0, 0))
+    return transforms.functional.rotate(
+        square, angle, interpolation=transforms.InterpolationMode.BILINEAR,
+        expand=True, fill=fill)
+
+def rotate_train_digit(image, digit):
+    if not ROTATION_EXPERIMENT or int(digit) not in ROTATION_AUGMENT_CLASSES:
+        return image
+    return rotate_on_expanded_canvas(image, random.uniform(-EXTRA_ROTATION_DEGREES,
+                                                          EXTRA_ROTATION_DEGREES))
+
+print('Extra rotation experiment:', ROTATION_EXPERIMENT,
+      'classes:', sorted(ROTATION_AUGMENT_CLASSES),
+      'training-only angle range:', (-EXTRA_ROTATION_DEGREES, EXTRA_ROTATION_DEGREES))
+""")
+
 code("""
 def pad_square(image):
     image = image.convert('RGB')
@@ -295,7 +327,10 @@ def pad_square(image):
 augment = transforms.Compose([
     transforms.RandomRotation(20, fill=127),
     transforms.RandomPerspective(distortion_scale=0.15, p=0.20, fill=127),
-    transforms.RandomAffine(degrees=0, translate=(0.06, 0.06), scale=(0.90, 1.10), fill=127),
+    transforms.RandomAffine(degrees=0,
+                            translate=(0.12, 0.12) if ROTATION_EXPERIMENT else (0.06, 0.06),
+                            scale=(0.85, 1.15) if ROTATION_EXPERIMENT else (0.90, 1.10),
+                            fill=127),
     transforms.ColorJitter(brightness=0.15, contrast=0.15, saturation=0.10),
     transforms.RandomApply([transforms.GaussianBlur(kernel_size=3, sigma=(0.1, 0.8))], p=0.10),
     transforms.RandomGrayscale(p=0.05),
@@ -311,15 +346,18 @@ def make_transform(train, pretrained):
     return transforms.Compose(steps)
 
 class DigitCrops(Dataset):
-    def __init__(self, frame, transform):
+    def __init__(self, frame, transform, train=False):
         self.records = frame[['crop_file', 'digit', 'source_dataset']].to_records(index=False)
         self.transform = transform
+        self.train = train
     def __len__(self):
         return len(self.records)
     def __getitem__(self, index):
         rel, digit, source = self.records[index]
         with Image.open(DATA_ROOT / rel) as image:
             rgb = image.convert('RGB')
+        if self.train:
+            rgb = rotate_train_digit(rgb, digit)
         return self.transform(rgb), int(digit), str(rel), str(source)
 
 train_frame = metadata.loc[metadata.unified_split == 'train'].reset_index(drop=True)
@@ -341,10 +379,41 @@ def loaders(pretrained):
     common = dict(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
                   pin_memory=(device.type == 'cuda'), persistent_workers=(NUM_WORKERS > 0))
     return (
-        DataLoader(DigitCrops(train_frame, make_transform(True, pretrained)), shuffle=True, **common),
+        DataLoader(DigitCrops(train_frame, make_transform(True, pretrained), train=True), shuffle=True, **common),
         DataLoader(DigitCrops(val_frame, make_transform(False, pretrained)), shuffle=False, **common),
         DataLoader(DigitCrops(test_frame, make_transform(False, pretrained)), shuffle=False, **common),
     )
+
+
+class RotatedValidationCrops(Dataset):
+    def __init__(self, frame, transform):
+        selected = []
+        for digit in sorted(ROTATION_AUGMENT_CLASSES):
+            candidates = frame.loc[frame.digit == digit]
+            selected.append(candidates.sample(n=min(ROTATED_VAL_PER_CLASS, len(candidates)),
+                                              random_state=SEED))
+        self.records = pd.concat(selected)[['crop_file', 'digit', 'source_dataset']].to_records(index=False)
+        self.transform = transform
+
+    def __len__(self):
+        return len(self.records) * len(ROTATED_VAL_ANGLES)
+
+    def __getitem__(self, index):
+        record_index, angle_index = divmod(index, len(ROTATED_VAL_ANGLES))
+        rel, digit, source = self.records[record_index]
+        angle = ROTATED_VAL_ANGLES[angle_index]
+        with Image.open(DATA_ROOT / rel) as image:
+            rotated = rotate_on_expanded_canvas(image.convert('RGB'), angle)
+        return self.transform(rotated), int(digit), str(rel) + f'@{angle}', str(source)
+
+
+def rotated_validation_loader(pretrained):
+    if not ROTATION_EXPERIMENT:
+        return None
+    common = dict(batch_size=BATCH_SIZE, num_workers=NUM_WORKERS,
+                  pin_memory=(device.type == 'cuda'), persistent_workers=(NUM_WORKERS > 0))
+    return DataLoader(RotatedValidationCrops(val_frame, make_transform(False, pretrained)),
+                      shuffle=False, **common)
 
 preview = train_frame.sample(n=12, random_state=SEED)
 fig, axes = plt.subplots(2, 6, figsize=(13, 5))
@@ -353,6 +422,22 @@ for ax, (_, row) in zip(axes.flat, preview.iterrows()):
         transformed = augment(pad_square(image).resize((INPUT_SIZE, INPUT_SIZE)))
     ax.imshow(transformed); ax.set_title(str(row.digit)); ax.axis('off')
 fig.suptitle('Training-only augmentation preview (no flips)'); fig.tight_layout(); plt.show()
+""")
+
+code("""
+if ROTATION_EXPERIMENT:
+    examples = train_frame.loc[train_frame.digit == 1].sample(n=12, random_state=SEED)
+    fig, axes = plt.subplots(2, 6, figsize=(12, 5))
+    for ax, (_, row) in zip(axes.flat, examples.iterrows()):
+        with Image.open(DATA_ROOT / row.crop_file) as image:
+            rotated = rotate_train_digit(image.convert('RGB'), row.digit)
+        ax.imshow(rotated)
+        ax.set_title('label 1')
+        ax.axis('off')
+    fig.suptitle('Extra training-only rotation: digit 1 examples')
+    fig.tight_layout()
+    fig.savefig(OUTPUT_ROOT / 'rotation_preview_digit_1.png', dpi=140)
+    plt.show()
 """)
 
 md("""## 3. Define the three models
@@ -404,20 +489,21 @@ del scratch_probe
 
 md("""## 4. Train with validation-based checkpoint selection
 
-AdamW uses inverse-square-root class weights from full train only. The scheduler is `ReduceLROnPlateau` on validation macro F1. Early stopping and `best.pt` use validation macro F1; test is not opened until **all selected models have finished training**. Mixed precision and gradient scaling activate on CUDA. Lower `BATCH_SIZE` if CUDA OOM occurs, then restart the run.
+AdamW uses inverse-square-root class weights from full train only. In the rotation experiment, the scheduler, early stopping, and `best.pt` use the mean of upright and fixed-angle validation macro F1. The fixed-angle validation metric covers digits 1–5 only. The original comparison still uses upright validation macro F1. The test split is not opened during rotation training. Mixed precision and gradient scaling activate on CUDA. Lower `BATCH_SIZE` if CUDA OOM occurs, then restart the run.
 """)
 
 code("""
-def classification_metrics(true, predicted):
+def classification_metrics(true, predicted, labels=None):
+    labels = list(range(10)) if labels is None else list(labels)
     precision, recall, macro_f1, _ = precision_recall_fscore_support(
-        true, predicted, labels=list(range(10)), average='macro', zero_division=0)
+        true, predicted, labels=labels, average='macro', zero_division=0)
     _, _, weighted_f1, _ = precision_recall_fscore_support(
-        true, predicted, labels=list(range(10)), average='weighted', zero_division=0)
+        true, predicted, labels=labels, average='weighted', zero_division=0)
     return {'accuracy': float(accuracy_score(true, predicted)), 'macro_precision': float(precision),
             'macro_recall': float(recall), 'macro_f1': float(macro_f1), 'weighted_f1': float(weighted_f1),
             'n': len(true)}
 
-def run_epoch(model, loader, criterion, optimizer=None, scaler=None):
+def run_epoch(model, loader, criterion, optimizer=None, scaler=None, metric_labels=None):
     training = optimizer is not None
     model.train(training)
     # Frozen backbone BatchNorm statistics stay fixed in the head-only stage.
@@ -443,12 +529,13 @@ def run_epoch(model, loader, criterion, optimizer=None, scaler=None):
             losses.append(float(loss.detach()) * len(labels))
             true.extend(labels.cpu().tolist())
             predicted.extend(logits.argmax(1).cpu().tolist())
-    return {'loss': sum(losses) / len(true), **classification_metrics(true, predicted)}
+    return {'loss': sum(losses) / len(true), **classification_metrics(true, predicted, metric_labels)}
 
 def train_one(name):
     model, pretrained = create_model(name)
     model = model.to(device)
     train_loader, val_loader, _ = loaders(pretrained)
+    rotated_val_loader = rotated_validation_loader(pretrained)
     criterion = nn.CrossEntropyLoss(weight=class_weights)
     scaler = torch.amp.GradScaler('cuda', enabled=(device.type == 'cuda'))
     output_dir = OUTPUT_ROOT / name.lower()
@@ -468,21 +555,34 @@ def train_one(name):
             epoch_number += 1
             train_result = run_epoch(model, train_loader, criterion, optimizer, scaler)
             val_result = run_epoch(model, val_loader, criterion)
-            scheduler.step(val_result['macro_f1'])
+            rotated_val_result = (run_epoch(model, rotated_val_loader, criterion,
+                                           metric_labels=sorted(ROTATION_AUGMENT_CLASSES))
+                                  if rotated_val_loader is not None else None)
+            selection_score = (val_result['macro_f1'] + rotated_val_result['macro_f1']) / 2 if rotated_val_result else val_result['macro_f1']
+            scheduler.step(selection_score)
             history.append({'epoch': epoch_number, 'stage': stage, 'lr': optimizer.param_groups[0]['lr'],
                             **{'train_' + k: v for k, v in train_result.items()},
-                            **{'val_' + k: v for k, v in val_result.items()}})
+                            **{'val_' + k: v for k, v in val_result.items()},
+                            'val_rotated_macro_f1': rotated_val_result['macro_f1'] if rotated_val_result else None,
+                            'selection_score': selection_score})
             checkpoint = {'model_name': name, 'state_dict': model.state_dict(), 'epoch': epoch_number,
                           'input_size': INPUT_SIZE, 'smoke_test': SMOKE_TEST,
-                          'validation_macro_f1': val_result['macro_f1']}
+                          'validation_macro_f1': val_result['macro_f1'],
+                          'validation_rotated_macro_f1': rotated_val_result['macro_f1'] if rotated_val_result else None,
+                          'selection_score': selection_score,
+                          'rotation_experiment': ROTATION_EXPERIMENT,
+                          'rotation_classes': sorted(ROTATION_AUGMENT_CLASSES) if ROTATION_EXPERIMENT else [],
+                          'rotation_degrees': EXTRA_ROTATION_DEGREES if ROTATION_EXPERIMENT else 0}
             torch.save(checkpoint, output_dir / 'last.pt')
-            if val_result['macro_f1'] > best_f1:
-                best_f1, best_epoch, patience = val_result['macro_f1'], epoch_number, 0
+            if selection_score > best_f1:
+                best_f1, best_epoch, patience = selection_score, epoch_number, 0
                 torch.save(checkpoint, output_dir / 'best.pt')
             else:
                 patience += 1
             print(name, stage, epoch_number, 'train loss', round(train_result['loss'], 4),
-                  'val macro F1', round(val_result['macro_f1'], 4), flush=True)
+                  'val upright F1', round(val_result['macro_f1'], 4),
+                  'val rotated F1', round(rotated_val_result['macro_f1'], 4) if rotated_val_result else 'n/a',
+                  'selection', round(selection_score, 4), flush=True)
             pd.DataFrame(history).to_csv(output_dir / 'metrics' / 'history.csv', index=False)
             if patience >= EARLY_STOPPING_PATIENCE and stage != 'head':
                 print('Early stopping:', name, stage)
@@ -490,16 +590,20 @@ def train_one(name):
     best = torch.load(output_dir / 'best.pt', map_location='cpu', weights_only=False)
     model.load_state_dict(best['state_dict'])
     val_result = run_epoch(model, val_loader, criterion)
-    del train_loader, val_loader
+    rotated_val_result = (run_epoch(model, rotated_val_loader, criterion,
+                                   metric_labels=sorted(ROTATION_AUGMENT_CLASSES))
+                          if rotated_val_loader is not None else None)
+    del train_loader, val_loader, rotated_val_loader
     if device.type == 'cuda':
         torch.cuda.empty_cache()
     return {'model': model, 'pretrained': pretrained, 'best_epoch': best_epoch,
-            'validation': val_result, 'output_dir': output_dir}
+            'validation': val_result, 'rotated_validation': rotated_val_result,
+            'selection_score': best_f1, 'output_dir': output_dir}
 
 trained = {}
 for model_name in MODELS_TO_RUN:
     trained[model_name] = train_one(model_name)
-print('All selected models trained. Best checkpoints used validation macro F1 only.')
+print('All selected models trained. Best checkpoints used validation data only.')
 """)
 
 md("""## 5. Test evaluation and source-specific metrics
@@ -811,3 +915,56 @@ notebook = {"cells": cells, "metadata": {"kernelspec": {"display_name": "Python 
 target = HERE / "digit_classifier_comparison.ipynb"
 target.write_text(json.dumps(notebook, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
 print(target)
+
+rotation_cells = json.loads(json.dumps(cells))
+config = rotation_cells[1]["source"]
+config = config.replace('SMOKE_TEST = True', 'SMOKE_TEST = False')
+config = config.replace("ROTATION_EXPERIMENT = False", "ROTATION_EXPERIMENT = True")
+config = config.replace('MODELS_TO_RUN = ["CNN_FROM_SCRATCH", "MOBILENETV3_SMALL", "RESNET18"]',
+                        'MODELS_TO_RUN = ["MOBILENETV3_SMALL", "RESNET18"]')
+config = config.replace('RUN_FINAL_EVALUATION = True', 'RUN_FINAL_EVALUATION = False')
+rotation_cells[1]["source"] = config
+rotation_cells[0]["source"] = (
+    '# Rotation-augmented digit classifier experiment for OpenMANIPULATOR-X\n\n'
+    'This is a separate follow-up to the completed baseline comparison. It uses the same '
+    '`DIGIT_CLASSIFICATION_V1` train/validation/test split and trains MobileNetV3-Small and '
+    'ResNet18 again. Training images for digits 1–5 receive random full-circle in-plane '
+    'rotation on an expanded canvas; all other train classes keep the original mild '
+    'augmentation. A fixed-angle subset of validation digits 1–5 checks rotated accuracy '
+    'alongside the upright validation split. '
+    'The baseline notebook and its saved results remain separate.\n\n'
+    'Attach the complete prepared dataset as a Kaggle Dataset and enable a GPU. '
+    '`SMOKE_TEST=False` is set for the requested full run. If you want a short pipeline check '
+    'first, temporarily set it to `True`; restart and restore `False` before full training. '
+    'The notebook selects checkpoints using mean upright and rotated validation macro F1 '
+    'and leaves public test evaluation disabled. Afterward, compare '
+    'downloaded `best.pt` checkpoints on manually labeled, rotated real cube-camera crops. '
+    'A tiny three-frame cube-1 pilot is diagnostic only. In-plane rotation does not address '
+    'cube tilt, blur, occlusion, or the ambiguity between 6 and 9.\n'
+)
+for cell in rotation_cells:
+    if cell["cell_type"] == "code" and "print('All selected models trained. Best checkpoints used validation data only.')" in cell["source"]:
+        cell["source"] += (
+            "\nrotation_summary = pd.DataFrame([\n"
+            "    {'model': name, 'best_epoch': result['best_epoch'],\n"
+            "     'upright_val_macro_f1': result['validation']['macro_f1'],\n"
+            "     'rotated_val_macro_f1': result['rotated_validation']['macro_f1'],\n"
+            "     'selection_score': result['selection_score']}\n"
+            "    for name, result in trained.items()\n"
+            "])\n"
+            "rotation_summary.to_csv(OUTPUT_ROOT / 'rotation_validation_summary.csv', index=False)\n"
+            "display(rotation_summary)\n"
+        )
+    if cell["cell_type"] == "markdown" and cell["source"].startswith('## 5. Test evaluation'):
+        cell["source"] = ('## 5. Test evaluation\n\n'
+                          'Disabled for this rotation experiment. The notebook trains and selects '
+                          'checkpoints by upright and fixed-angle samples from the validation split; do the real cube-camera '
+                          'evaluation after training.\n')
+    if cell["cell_type"] == "code" and "Complete all three full-data runs before the final evaluation." in cell["source"]:
+        cell["source"] = cell["source"].replace(
+            "Check losses and checkpoints. Complete all three full-data runs before the final evaluation.",
+            "Rotation experiment: review validation history and test the saved best.pt files on labeled real cube-camera scenes.")
+rotation_notebook = {**notebook, "cells": rotation_cells}
+rotation_target = HERE / "digit_rotation_experiment.ipynb"
+rotation_target.write_text(json.dumps(rotation_notebook, indent=1, ensure_ascii=False) + "\n", encoding="utf-8")
+print(rotation_target)
