@@ -1,0 +1,11 @@
+point_id,requested_x_mm,requested_y_mm,requested_z_mm,q1_deg,q2_deg,q3_deg,q4_deg,fk_x_mm,fk_y_mm,fk_z_mm,observed_jaw_x_mm,observed_jaw_y_mm,observed_jaw_z_mm,measurement_origin,source_note
+P1,131,130,0,-44.824,23.467,-10.723,84.990,130.915,130.114,-0.254,,,,ID11_rear_face,fk_axis_from_pasted_live_state
+P2,295,130,0,-23.818,38.672,-24.258,39.902,295.846,130.597,1.669,,,,ID11_rear_face,fk_axis_from_pasted_live_state
+P3,131,-92,0,,,,,,,,,,,ID11_rear_face,pending_measurement
+P4,295,-92,0,,,,,,,,,,,ID11_rear_face,pending_measurement
+P5,295,0,0,-0.000,33.399,-20.127,50.010,294.537,0.002,-0.071,,,,ID11_rear_face,fk_axis_from_pasted_live_state
+P6,180,78,0,-23.466,30.147,-21.621,89.912,180.139,78.201,-0.232,,,,ID11_rear_face,fk_axis_from_pasted_live_state
+P7,260,78,0,-16.699,36.651,-31.377,69.961,260.131,78.040,0.010,,,,ID11_rear_face,fk_axis_from_pasted_live_state
+P8,180,-50,0,,,,,,,,,,,ID11_rear_face,pending_measurement
+P9,260,-50,0,,,,,,,,,,,ID11_rear_face,pending_measurement
+Q220Y90,220,90,,-22.148,30.850,-22.324,74.971,221.221,90.046,-1.979,,,,ID11_rear_face,fk_axis_from_pasted_live_state_requested_z_unspecified

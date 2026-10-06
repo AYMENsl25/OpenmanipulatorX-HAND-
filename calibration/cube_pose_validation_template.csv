@@ -1,0 +1,1 @@
+true_x_mm,true_y_mm,true_z_mm,camera_pose_name,joint_1_deg,joint_2_deg,joint_3_deg,joint_4_deg,fk_hand_x_mm,fk_hand_y_mm,fk_hand_z_mm,pixel_u,pixel_v,localization_method,predicted_cube_x_mm,predicted_cube_y_mm,predicted_cube_z_mm,error_x_mm,error_y_mm,error_z_mm,error_norm_mm
