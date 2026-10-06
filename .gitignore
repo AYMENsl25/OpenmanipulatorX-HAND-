@@ -1,4 +1,5 @@
 venv/
+.venv/
 node_modules/
 graphify-out/
 .verification/
@@ -12,6 +13,14 @@ tmp*/
 .pytest_cache/
 .mypy_cache/
 .ruff_cache/
+/build/
+/dist/
+/vision_experiments/archives/
+/vision_experiments/*.zip
+/digit_model_experiments/*.zip
+/digit_model_experiments/results/rotation_v2/yolo_config/
+/dataset/*.zip
+/digit_classification_dataset/DIGIT_CLASSIFICATION_V1/
 /digit_model_experiments_output/
 /output/DIGIT_CLASSIFICATION_V1/*
 !/output/DIGIT_CLASSIFICATION_V1/class_distribution.csv
