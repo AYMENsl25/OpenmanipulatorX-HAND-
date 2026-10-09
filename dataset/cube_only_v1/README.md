@@ -61,7 +61,28 @@ capture a separate session for validation. The 28 earlier
 `rotation_v2_yolo` frames should remain a held-out challenge set. Export to
 the final YOLO `images/` and `labels/` train/val structure only after review.
 
+## Read-only inspection after review
+
+Use `vision_experiments/inspect_numbered_cube_labels.py` to display the saved
+`reviewed_labels/` boxes on the raw images. Its default view filters to
+`ai_reviewed` images 100–400. Press `N` or Space for next, `P` for previous,
+and `Q` to quit. `--start 172` jumps to that original image number;
+`--status all --start 1` also includes the 99 hand-reviewed images.
+`--audit-only` checks that each image, label file, and manifest count agree,
+and that YOLO coordinates are valid. These structural checks cannot determine
+whether a box includes a shadow or misses a cube. Contact sheets of the 301
+AI-reviewed images are in `reviewed_overlays/`; they are generated previews,
+not training images.
+
 ## Changelog
 
 - 1.0 (2026-10-06): Defined one-class cube boxes and created unreviewed
   model proposals for the first numbered-cube capture session.
+- 1.1 (2026-10-07): Images 1-99 were reviewed by hand (`status=reviewed`).
+  Images 100-400 were labelled by AI (Sonnet 5.5 draft, then a second-pass
+  verification by Sonnet 5.5 or Opus 5.5) and are marked `status=ai_reviewed`
+  in `reviewed_manifest.csv`. Boxes follow the same rule: cube body only,
+  including sharp-edged dark side faces, excluding soft cast shadows. Dark
+  side face vs. shadow is ambiguous in blurry frames, so spot-check
+  `ai_reviewed` labels before training. Pre-export labels were backed up in
+  `_backup_before_ai_review_*`.

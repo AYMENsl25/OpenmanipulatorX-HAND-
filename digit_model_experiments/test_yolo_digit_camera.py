@@ -1,7 +1,7 @@
-r"""Camera-only YOLO cube detection followed by two digit classifiers.
+r"""Camera-only fine-tuned YOLO cube detection followed by two digit classifiers.
 
 Run from the workspace root:
-    python digit_model_experiments/test_yolo_digit_camera.py --yolo vision_experiments/checkpoints/robotic_E1_camera_finetune_best.pt --index 1
+    python digit_model_experiments/test_yolo_digit_camera.py --index 1
 
 Direct detection is the default so the tracker cannot suppress a visible cube.
 Use --detector-mode track when persistent IDs are needed. Without tracking, cube
@@ -26,7 +26,12 @@ from test_multi_cube_camera import predict_rotations
 
 
 WINDOW = "YOLO cubes + digit models | S: save frame | Q: quit"
-OUTPUT = Path(__file__).resolve().parent / "camera_tests" / "yolo_digit"
+HERE = Path(__file__).resolve().parent
+ROOT = HERE.parent
+DEFAULT_YOLO = ROOT / "vision_experiments" / "checkpoints" / "cube_only_yolo26_v1" / "best.pt"
+DEFAULT_MOBILE = HERE / "checkpoints" / "rotation_v2" / "mobilenetv3_small" / "best.pt"
+DEFAULT_RESNET = HERE / "checkpoints" / "rotation_v2" / "resnet18" / "best.pt"
+OUTPUT = HERE / "camera_tests" / "cube_only_yolo26_v1_digit"
 LOG_FIELDS = ["capture_id", "crop_file", "track_id", "cube_order", "yolo_confidence",
               "cube_box_xyxy", "digit_box_xyxy", "mobile_prediction", "mobile_score",
               "resnet_prediction", "resnet_score", "true_digit", "scene_id", "split"]
@@ -43,6 +48,21 @@ def inner_box(box: tuple[int, int, int, int], scale: float):
     half_h = (y2 - y1) * scale / 2
     return (int(center_x - half_w), int(center_y - half_h),
             int(center_x + half_w), int(center_y + half_h))
+
+
+def top_face_box(box: tuple[int, int, int, int], inset: float, height_fraction: float):
+    """Approximate the upward-facing digit region within a whole-cube YOLO box."""
+    x1, y1, x2, y2 = box
+    width, height = x2 - x1, y2 - y1
+    return (int(x1 + inset * width), int(y1 + 0.02 * height),
+            int(x2 - inset * width), int(y1 + height_fraction * height))
+
+
+def digit_crop_box(box, mode: str, inner_scale: float,
+                   face_inset: float, face_height: float):
+    if mode == "top-face":
+        return top_face_box(box, face_inset, face_height)
+    return inner_box(box, inner_scale)
 
 
 def cube_detections(result, frame_shape, cube_class):
@@ -77,11 +97,12 @@ def draw_label(frame, text, point, color):
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--yolo", type=Path, required=True, help="Trained YOLO shape checkpoint")
-    parser.add_argument("--mobile-checkpoint", type=Path,
-                        help="Optional replacement MobileNet checkpoint for comparison")
-    parser.add_argument("--resnet-checkpoint", type=Path,
-                        help="Optional replacement ResNet18 checkpoint for comparison")
+    parser.add_argument("--yolo", type=Path, default=DEFAULT_YOLO,
+                        help="Fine-tuned cube detector (default: cube_only_yolo26_v1/best.pt)")
+    parser.add_argument("--mobile-checkpoint", type=Path, default=DEFAULT_MOBILE,
+                        help="MobileNet checkpoint (default: rotation_v2)")
+    parser.add_argument("--resnet-checkpoint", type=Path, default=DEFAULT_RESNET,
+                        help="ResNet18 checkpoint (default: rotation_v2)")
     parser.add_argument("--index", type=int, default=1, help="Camera index")
     parser.add_argument("--cube-class", default="cube", help="Cube class name in YOLO model")
     parser.add_argument("--yolo-confidence", type=float, default=0.25)
@@ -90,7 +111,13 @@ def main():
     parser.add_argument("--yolo-imgsz", type=int, default=640,
                         help="YOLO inference image size; larger values may help small cubes but run slower")
     parser.add_argument("--inner-scale", type=float, default=0.72,
-                        help="Fraction of each cube box sent to the digit models")
+                        help="Fraction of cube box sent to digit models in center mode")
+    parser.add_argument("--crop-mode", choices=("top-face", "center"), default="top-face",
+                        help="Top-face ROI (default) or original centered crop")
+    parser.add_argument("--face-inset", type=float, default=0.08,
+                        help="Horizontal inset fraction for top-face crop")
+    parser.add_argument("--face-height", type=float, default=0.65,
+                        help="Height fraction of cube box used for top-face crop")
     parser.add_argument("--rotation-search", action="store_true",
                         help="Try four rotations; experimental and ambiguous for 6/9")
     parser.add_argument("--output-dir", type=Path, default=OUTPUT,
@@ -100,8 +127,10 @@ def main():
     args = parser.parse_args()
     if not args.yolo.is_file():
         parser.error(f"YOLO checkpoint not found: {args.yolo}")
-    if not 0 < args.yolo_confidence < 1 or not 0.2 <= args.inner_scale <= 1 or args.interval <= 0 or args.yolo_imgsz < 32:
-        parser.error("Confidence must be 0-1; inner scale 0.2-1; interval positive; YOLO image size at least 32")
+    if (not 0 < args.yolo_confidence < 1 or not 0.2 <= args.inner_scale <= 1 or
+            not 0 <= args.face_inset < 0.4 or not 0.2 <= args.face_height <= 1 or
+            args.interval <= 0 or args.yolo_imgsz < 32):
+        parser.error("Check confidence, crop fractions, interval, and YOLO image size (at least 32)")
 
     device = torch.device("cpu")
     replacements = {}
@@ -147,7 +176,8 @@ def main():
                 cubes = cube_detections(result, frame.shape, args.cube_class)
                 for order, (box, yolo_score, track_id) in enumerate(cubes, 1):
                     x1, y1, x2, y2 = box
-                    ix1, iy1, ix2, iy2 = inner_box(box, args.inner_scale)
+                    ix1, iy1, ix2, iy2 = digit_crop_box(
+                        box, args.crop_mode, args.inner_scale, args.face_inset, args.face_height)
                     digit_crop = frame[iy1:iy2, ix1:ix2]
                     if digit_crop.size == 0:
                         continue

@@ -14,16 +14,16 @@ import torch
 from ultralytics import YOLO
 
 from test_digit_camera import load_models, predict
-from test_yolo_digit_camera import cube_detections, draw_label, inner_box
+from test_yolo_digit_camera import cube_detections, digit_crop_box, draw_label
 
 
 HERE = Path(__file__).resolve().parent
 ROOT = HERE.parent
 DEFAULT_FRAMES = HERE / "camera_tests" / "yolo_digit"
-DEFAULT_YOLO = ROOT / "vision_experiments" / "checkpoints" / "robotic_E1_camera_finetune_best.pt"
+DEFAULT_YOLO = ROOT / "vision_experiments" / "checkpoints" / "cube_only_yolo26_v1" / "best.pt"
 DEFAULT_MOBILE = HERE / "checkpoints" / "rotation_v2" / "mobilenetv3_small" / "best.pt"
 DEFAULT_RESNET = HERE / "checkpoints" / "rotation_v2" / "resnet18" / "best.pt"
-DEFAULT_OUTPUT = HERE / "results" / "rotation_v2" / "yolo_saved_frames"
+DEFAULT_OUTPUT = HERE / "results" / "cube_only_yolo26_v1" / "yolo_saved_frames"
 FIELDS = ["frame_file", "cube_order", "detected", "yolo_confidence", "cube_box_xyxy",
           "digit_box_xyxy", "digit_crop_file", "mobile_prediction", "mobile_confidence",
           "resnet_prediction", "resnet_confidence", "true_digit"]
@@ -39,12 +39,16 @@ def main() -> None:
     parser.add_argument("--output-dir", type=Path, default=DEFAULT_OUTPUT)
     parser.add_argument("--yolo-confidence", type=float, default=0.35)
     parser.add_argument("--inner-scale", type=float, default=0.72)
+    parser.add_argument("--crop-mode", choices=("top-face", "center"), default="top-face")
+    parser.add_argument("--face-inset", type=float, default=0.08)
+    parser.add_argument("--face-height", type=float, default=0.65)
     parser.add_argument("--cube-class", default="cube")
     args = parser.parse_args()
     if not args.yolo.is_file():
         parser.error(f"Missing YOLO model: {args.yolo}")
-    if not 0 < args.yolo_confidence < 1 or not 0.2 <= args.inner_scale <= 1:
-        parser.error("Confidence must be between 0 and 1; inner scale between 0.2 and 1")
+    if (not 0 < args.yolo_confidence < 1 or not 0.2 <= args.inner_scale <= 1 or
+            not 0 <= args.face_inset < 0.4 or not 0.2 <= args.face_height <= 1):
+        parser.error("Confidence or crop fractions out of range")
     frames = sorted(args.frames_dir.glob(args.pattern))
     if not frames:
         parser.error(f"No saved frames in {args.frames_dir}")
@@ -72,7 +76,8 @@ def main() -> None:
             draw_label(overlay, "No cube detected", (10, 30), (0, 165, 255))
         for order, (box, yolo_score, _track_id) in enumerate(detections, 1):
             x1, y1, x2, y2 = box
-            ix1, iy1, ix2, iy2 = inner_box(box, args.inner_scale)
+            ix1, iy1, ix2, iy2 = digit_crop_box(
+                box, args.crop_mode, args.inner_scale, args.face_inset, args.face_height)
             crop = frame[iy1:iy2, ix1:ix2]
             if crop.size == 0:
                 continue

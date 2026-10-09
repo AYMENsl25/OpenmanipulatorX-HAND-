@@ -11,3 +11,5 @@
 Run scripts from the workspace root using `python vision_experiments/<script>.py`. Data paths in the scripts point back to the existing workspace data and dataset folders.
 
 The camera-fine-tuned YOLO26 cube/shape [checkpoint and provenance](checkpoints/README.md) are in `checkpoints/`. The complete supplied YOLO project ZIP is retained in `archives/`.
+
+The newer [one-class cube checkpoint](checkpoints/cube_only_yolo26_v1/README.md) is the default in the [digit camera pipeline](../digit_model_experiments/YOLO_DIGIT_INTEGRATION.md). Its [fine-tuning notebook](yolo26_cube_finetune.ipynb) uses the [reviewed cube labels](../dataset/cube_only_v1/README.md), exported by `prepare_cube_yolo_finetune.py`. These labels include AI review and the validation images come from the same camera session; test on a fresh session before relying on the detector.

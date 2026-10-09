@@ -1,5 +1,9 @@
 # Digit classifier training and camera test
 
+## Current cube detection and digit reading
+
+The [camera integration guide](YOLO_DIGIT_INTEGRATION.md) now uses the [one-class cube YOLO26 checkpoint](../vision_experiments/checkpoints/cube_only_yolo26_v1/README.md) and the rotation-trained MobileNetV3-Small and ResNet18 digit checkpoints by default. The [saved-frame replay](results/cube_only_yolo26_v1/yolo_saved_frames/) contains four camera frames and prediction records; its digit labels are unverified, so it does not measure accuracy.
+
 ## Rotation v2 camera experiment
 
 The downloaded rotation-trained MobileNetV3-Small and ResNet18 checkpoints are in [`checkpoints/rotation_v2/`](checkpoints/rotation_v2/). The completed saved-crop and saved-frame replays, plus the two live camera commands, are documented in [`results/rotation_v2/README.md`](results/rotation_v2/README.md). The earlier checkpoints remain separate.
